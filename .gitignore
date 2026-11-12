@@ -1,0 +1,31 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Local virtual environment
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Build and binary artifacts
+*.bin
+*.elf
+*.map
+*.hex
+firmware/
+
+# Secrets: Wi-Fi credentials, API keys, tokens
+include/secrets.h
+secrets.h
+*.secret
+.env
+.env.*
+
+# Logs
+*.log
