@@ -182,4 +182,4 @@ cd /home/hy/Smart-Calendar
   2. 驱动板 RESE 挡位（0.47 Ω / 3 Ω）与参考电路 2.2 Ω 的差异及正确选择；
   3. 驱动板 3.3 V 供电与升压电路连接方式。
 - 在电气兼容性确认前，不进行墨水屏接线与上电。
-- 已初始化本地 Git 仓库，但未创建远程、未提交、未推送。
+- 已推送至 GitHub：<https://github.com/Sprouting123/Smart-Calendar>（分支 `main`）。
