@@ -3,8 +3,9 @@
 一款基于 **ESP32-C3** 与 **4.2 英寸黑白电子墨水屏** 的低成本桌面台历。
 设备通过 Wi-Fi 校时与获取信息，USB 持续供电，界面追求极简、低频刷新。
 
-> 状态：**实验 01 已完成**（ESP32-C3 主控与环境验证）。
-> 墨水屏尚未连接，实验 02 之前禁止给墨水屏上电。
+> 状态：**实验 02 准备阶段**——资料核对与 Hello World 固件编译已完成；
+> 墨水屏**尚未接线、尚未上电、新固件尚未烧录**。
+> 实验 01（ESP32-C3 主控验证）已完成。
 
 本项目与 `/home/hy/ai-desktop-robot/`（AI 桌宠机器人）完全独立，后者不属于本仓库范围。
 
@@ -31,6 +32,7 @@
 - PlatformIO 平台：`espressif32@6.12.0`
 - 框架：Arduino（Arduino-ESP32 core，ESP-IDF SDK v4.4.7）
 - 板卡定义：`lolin_c3_mini`
+- 墨水屏库：`zinggjm/GxEPD2@1.6.9`（驱动类 `GxEPD2_420_GDEY042T81`）
 
 ### 为什么选 `lolin_c3_mini`
 
@@ -65,8 +67,9 @@ PlatformIO 没有 "ESP32-C3 SuperMini" 官方板卡。`lolin_c3_mini` 与 SuperM
 ```text
 Smart-Calendar/
 ├── platformio.ini          # PlatformIO 工程配置
-├── src/main.cpp            # 实验 01 心跳测试固件
-├── include/                # 项目头文件（预留）
+├── src/main.cpp            # 实验 02 Hello World 固件（仅编译）
+├── include/epd_config.h    # 墨水屏引脚、尺寸与驱动类
+├── include/                # 其他项目头文件（预留）
 ├── lib/                    # 项目私有库（预留）
 ├── docs/progress.md        # 实验记录与进度
 ├── tools/                  # 辅助脚本 / udev 规则
@@ -91,24 +94,29 @@ cd /home/hy/Smart-Calendar
 .venv/bin/pio device monitor --port /dev/ttyACM1 --baud 115200
 ```
 
-固件行为：启动时打印芯片信息，之后每秒输出一行心跳，包含运行秒数与计数器。
+固件行为（实验 02，当前仅编译、未烧录）：
 
-```text
-==========================================
- Smart Calendar - Experiment 01
- ESP32-C3 serial heartbeat test
-==========================================
-Chip       : ESP32-C3 (revision 4)
-Cores      : 1
-CPU        : 160 MHz
-Flash      : 4 MB
-SDK        : v4.4.7-dirty
-Reset cause: 0
-==========================================
-[1 s] heartbeat #1 - Smart Calendar alive
-[2 s] heartbeat #2 - Smart Calendar alive
-...
-```
+1. 串口打印引脚映射与安全提示；
+2. 显式配置 ESP32-C3 的 SPI 引脚（不依赖板卡默认值）；
+3. 全屏绘制 “Hello World” 等信息并执行一次全刷；
+4. 调用 `display.hibernate()`，之后只输出串口心跳，不再刷新屏幕。
+
+## 实验 02 接线方案（尚未接线）
+
+> ⚠️ 仅供核对。当前**不要接线、不要上电**。RESE 必须置于 **3 Ω**，驱动板只能接 **3.3 V**。
+> 完整的安全核对清单见 [`docs/progress.md`](docs/progress.md) 实验 02 第 5 节。
+
+| 驱动板引脚 | ESP32-C3 SuperMini | 说明 |
+| --- | --- | --- |
+| GND | GND | 必须共地 |
+| 3V3 | 3V3 | 仅 3.3 V，禁止 5 V |
+| SCK | GPIO4 | FSPI SCK |
+| SDA | GPIO6 | FSPI MOSI |
+| RST | GPIO10 | 复位，低有效 |
+| DC | GPIO3 | 数据/命令选择 |
+| CS1 | GPIO7 | 片选 |
+| BUSY | GPIO0 | 忙状态输入 |
+| CS2 | 不接 | 单屏不用 |
 
 ## 实验 01 结果摘要
 
