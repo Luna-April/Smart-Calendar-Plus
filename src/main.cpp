@@ -1,9 +1,13 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <Preferences.h>
 #include <time.h>
 
 #include <Adafruit_GFX.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold24pt7b.h>
 #include <GxEPD2_BW.h>
@@ -16,12 +20,11 @@
 #error "Missing include/secrets.h - copy include/secrets.example.h and fill in Wi-Fi credentials."
 #endif
 
-// Experiment 03 - Wi-Fi, NTP and calendar.
+// Experiment 04 - Wi-Fi, NTP, calendar and today's todos.
 //
-// Refresh strategy:
-//   - full refresh on boot, date change, Wi-Fi state change and every hour;
-//   - partial refresh of the time area once per minute.
-// This keeps the clock minute-accurate without a full-screen flash every minute.
+// Todos are entered from a small web page served by the ESP32 and stored in
+// NVS (Preferences). The e-paper shows at most three non-empty todo items.
+// Current fonts are ASCII-only; non-ASCII bytes are displayed as '?'.
 
 namespace {
 
@@ -36,16 +39,24 @@ constexpr uint32_t WIFI_RETRY_MS = 30000;
 constexpr uint32_t NTP_RETRY_MS = 30000;
 constexpr uint32_t FULL_REFRESH_MS = 3600000UL;  // 1 hour
 
-constexpr int16_t TIME_BASELINE = 70;
-constexpr int16_t DATE_BASELINE = 100;
-constexpr int16_t MONTH_BASELINE = 128;
-constexpr int16_t WEEKDAY_BASELINE = 148;
+constexpr int kMaxTodos = 3;
+constexpr size_t kMaxTodoLen = 40;
+
+// Layout: time/date, month calendar, today's todos, status line.
+constexpr int16_t TIME_BASELINE = 44;
+constexpr int16_t DATE_BASELINE = 70;
+constexpr int16_t MONTH_BASELINE = 88;
+constexpr int16_t WEEKDAY_BASELINE = 104;
 constexpr int16_t GRID_X = 11;
-constexpr int16_t GRID_Y = 155;
+constexpr int16_t GRID_Y = 108;
 constexpr int16_t CELL_W = 54;
-constexpr int16_t CELL_H = 20;
+constexpr int16_t CELL_H = 18;
 constexpr int16_t GRID_ROWS = 6;
-constexpr int16_t STATUS_BASELINE = 292;
+constexpr int16_t TODOS_TITLE_BASELINE = 230;
+constexpr int16_t TODO_BASELINES[kMaxTodos] = {246, 261, 276};
+constexpr int16_t STATUS_BASELINE = 294;
+constexpr int16_t TIME_PARTIAL_Y = 16;
+constexpr int16_t TIME_PARTIAL_H = 40;
 
 const char* const MONTH_NAMES[] = {"January", "February", "March",     "April",
                                    "May",     "June",     "July",      "August",
@@ -56,6 +67,12 @@ const char* const WEEKDAY_SHORT[] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
 
 GxEPD2_BW<epd::Driver, epd::HEIGHT> display(
     epd::Driver(epd::PIN_CS, epd::PIN_DC, epd::PIN_RST, epd::PIN_BUSY));
+
+WebServer server(80);
+String todoText[kMaxTodos];
+bool todoDone[kMaxTodos] = {false, false, false};
+bool webServerStarted = false;
+bool todosDirty = false;
 
 bool ntpSynced = false;
 int lastMinute = -1;
@@ -85,10 +102,119 @@ int daysInMonth(int year, int month) {
   return days[month];
 }
 
+String htmlEscape(const String& input) {
+  String out;
+  out.reserve(input.length() + 8);
+  for (size_t i = 0; i < input.length(); ++i) {
+    const char c = input[i];
+    switch (c) {
+      case '&': out += "&amp;"; break;
+      case '<': out += "&lt;"; break;
+      case '>': out += "&gt;"; break;
+      case '"': out += "&quot;"; break;
+      case '\'': out += "&#39;"; break;
+      default: out += c; break;
+    }
+  }
+  return out;
+}
+
+void loadTodos() {
+  Preferences prefs;
+  prefs.begin("todos", true);
+  for (int i = 0; i < kMaxTodos; ++i) {
+    char key[8];
+    snprintf(key, sizeof(key), "t%d", i);
+    todoText[i] = prefs.getString(key, "");
+    snprintf(key, sizeof(key), "d%d", i);
+    todoDone[i] = prefs.getBool(key, false);
+  }
+  prefs.end();
+}
+
+void saveTodos() {
+  Preferences prefs;
+  prefs.begin("todos", false);
+  for (int i = 0; i < kMaxTodos; ++i) {
+    char key[8];
+    snprintf(key, sizeof(key), "t%d", i);
+    prefs.putString(key, todoText[i]);
+    snprintf(key, sizeof(key), "d%d", i);
+    prefs.putBool(key, todoDone[i]);
+  }
+  prefs.end();
+}
+
+void handleRoot() {
+  String page;
+  page.reserve(2048);
+  page += F("<!doctype html><html><head><meta charset='utf-8'>");
+  page += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  page += F("<title>Smart Calendar</title>");
+  page += F("<style>body{font-family:system-ui,sans-serif;margin:20px;max-width:560px;}"
+            "h1{font-size:20px}.row{display:flex;align-items:center;gap:8px;"
+            "margin:10px 0}input[type=text]{flex:1;min-width:0;padding:8px;"
+            "font-size:16px}input[type=checkbox]{width:22px;height:22px}"
+            "button{padding:10px 18px;font-size:16px;margin-top:8px}"
+            ".note{color:#555;font-size:13px;line-height:1.4}</style></head><body>");
+  page += F("<h1>Smart Calendar - Today</h1>");
+  page += F("<p class='note'>E-paper text is ASCII only in this experiment; "
+            "Chinese characters will show as '?'. Max 40 characters each.</p>");
+  page += F("<form method='POST' action='/save'>");
+  for (int i = 0; i < kMaxTodos; ++i) {
+    char name[16];
+    snprintf(name, sizeof(name), "todo%d", i);
+    char doneName[16];
+    snprintf(doneName, sizeof(doneName), "done%d", i);
+    page += F("<div class='row'><input type='checkbox' name='");
+    page += doneName;
+    page += F("'");
+    if (todoDone[i]) page += F(" checked");
+    page += F("><input type='text' name='");
+    page += name;
+    page += F("' maxlength='40' value='");
+    page += htmlEscape(todoText[i]);
+    page += F("'></div>");
+  }
+  page += F("<button type='submit'>Save</button></form></body></html>");
+  server.send(200, "text/html; charset=utf-8", page);
+}
+
+void handleSave() {
+  for (int i = 0; i < kMaxTodos; ++i) {
+    char name[16];
+    snprintf(name, sizeof(name), "todo%d", i);
+    String text = server.arg(name);
+    text.replace("\r", " ");
+    text.replace("\n", " ");
+    text.trim();
+    if (text.length() > kMaxTodoLen) {
+      text = text.substring(0, kMaxTodoLen);
+    }
+    todoText[i] = text;
+
+    snprintf(name, sizeof(name), "done%d", i);
+    todoDone[i] = server.hasArg(name);
+  }
+  saveTodos();
+  todosDirty = true;
+  server.sendHeader("Location", "/", true);
+  server.send(303, "text/plain", "");
+}
+
+void startWebServer() {
+  if (webServerStarted) return;
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  server.begin();
+  webServerStarted = true;
+  Serial.printf("Web UI: http://%s/\n", WiFi.localIP().toString().c_str());
+}
+
 void drawTime(const struct tm& t) {
   char buf[8];
   snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
-  drawCentered(display, buf, TIME_BASELINE, &FreeSansBold24pt7b);
+  drawCentered(display, buf, TIME_BASELINE, &FreeSansBold18pt7b);
 }
 
 void drawDate(const struct tm& t) {
@@ -132,7 +258,7 @@ void drawCalendar(const struct tm& t) {
   first.tm_hour = 12;
   first.tm_min = 0;
   first.tm_sec = 0;
-  first.tm_isdst = -1;  // let mktime determine DST for the first of the month
+  first.tm_isdst = -1;
   const time_t firstTime = mktime(&first);
   localtime_r(&firstTime, &first);
   const int startCol = (first.tm_wday + 6) % 7;  // Monday = 0
@@ -157,19 +283,61 @@ void drawCalendar(const struct tm& t) {
     } else {
       display.setTextColor(GxEPD_BLACK);
     }
-    display.setCursor(x + (CELL_W - tbw) / 2 - tbx, y + 15);
+    display.setCursor(x + (CELL_W - tbw) / 2 - tbx, y + 14);
     display.print(dayBuf);
     display.setTextColor(GxEPD_BLACK);
+  }
+}
+
+void drawTodos() {
+  display.setFont(&FreeSansBold9pt7b);
+  display.setTextColor(GxEPD_BLACK);
+  display.setCursor(12, TODOS_TITLE_BASELINE);
+  display.print("TODAY");
+
+  display.setFont(&FreeSans9pt7b);
+  int line = 0;
+  for (int i = 0; i < kMaxTodos; ++i) {
+    if (todoText[i].length() == 0) continue;
+    const int y = TODO_BASELINES[line];
+    const int box = 8;
+    if (todoDone[i]) {
+      display.fillRect(12, y - 9, box, box, GxEPD_BLACK);
+    } else {
+      display.drawRect(12, y - 9, box, box, GxEPD_BLACK);
+    }
+
+    String text = todoText[i];
+    for (size_t j = 0; j < text.length(); ++j) {
+      if (static_cast<uint8_t>(text[j]) >= 0x80) {
+        text[j] = '?';
+      }
+    }
+    display.setCursor(26, y);
+    display.print(text);
+
+    if (todoDone[i]) {
+      int16_t tbx, tby;
+      uint16_t tbw, tbh;
+      display.getTextBounds(text, 0, 0, &tbx, &tby, &tbw, &tbh);
+      display.drawLine(26, y - 4, 26 + tbw, y - 4, GxEPD_BLACK);
+    }
+    ++line;
+  }
+
+  if (line == 0) {
+    display.setCursor(12, TODO_BASELINES[0]);
+    display.print("No todos - open Web UI");
   }
 }
 
 void drawStatus() {
   char buf[48];
   if (WiFi.status() == WL_CONNECTED) {
-    snprintf(buf, sizeof(buf), "Wi-Fi OK | %s",
-             ntpSynced ? "NTP synced" : "NTP waiting");
+    snprintf(buf, sizeof(buf), "Web UI: %s",
+             WiFi.localIP().toString().c_str());
   } else {
-    snprintf(buf, sizeof(buf), "Wi-Fi offline | retrying");
+    snprintf(buf, sizeof(buf), "Wi-Fi offline - retrying");
   }
   drawCentered(display, buf, STATUS_BASELINE, &FreeSans9pt7b);
 }
@@ -182,6 +350,7 @@ void drawFullScreen(const struct tm& t) {
     drawTime(t);
     drawDate(t);
     drawCalendar(t);
+    drawTodos();
     drawStatus();
   } while (display.nextPage());
 
@@ -191,9 +360,7 @@ void drawFullScreen(const struct tm& t) {
 }
 
 void drawTimePartial(const struct tm& t) {
-  // y=16 and h=64 keep the partial window aligned to the controller's 8-pixel
-  // RAM pages. The time glyphs occupy roughly y=36..74.
-  display.setPartialWindow(0, 16, epd::WIDTH, 64);
+  display.setPartialWindow(0, TIME_PARTIAL_Y, epd::WIDTH, TIME_PARTIAL_H);
   display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
@@ -300,6 +467,12 @@ void drawNoTimeScreen(bool wifiConnected) {
     drawCentered(display,
                  wifiConnected ? "Check router / NTP" : "Check Wi-Fi / router",
                  225, &FreeSans9pt7b);
+    if (wifiConnected) {
+      char ipbuf[40];
+      snprintf(ipbuf, sizeof(ipbuf), "Web UI: %s",
+               WiFi.localIP().toString().c_str());
+      drawCentered(display, ipbuf, 260, &FreeSans9pt7b);
+    }
   } while (display.nextPage());
 }
 
@@ -311,8 +484,8 @@ void setup() {
 
   Serial.println();
   Serial.println("==========================================");
-  Serial.println(" Smart Calendar - Experiment 03");
-  Serial.println(" Wi-Fi + NTP + calendar");
+  Serial.println(" Smart Calendar - Experiment 04");
+  Serial.println(" Wi-Fi + NTP + calendar + todos");
   Serial.println("==========================================");
   Serial.printf("SPI  : SCK=%d MOSI=%d CS=%d\n", epd::PIN_SCK, epd::PIN_MOSI,
                 epd::PIN_CS);
@@ -326,10 +499,12 @@ void setup() {
   display.setRotation(0);
   pinMode(epd::PIN_BUSY, INPUT_PULLUP);
 
+  loadTodos();
   drawConnectingScreen();
 
   const bool wifiConnected = connectWiFi();
   if (wifiConnected) {
+    startWebServer();
     syncNtp();
   }
 
@@ -348,6 +523,10 @@ void setup() {
 }
 
 void loop() {
+  if (webServerStarted) {
+    server.handleClient();
+  }
+
   const uint32_t now = millis();
 
   // Wi-Fi reconnect.
@@ -365,6 +544,7 @@ void loop() {
       Serial.println("Wi-Fi: retrying...");
       if (connectWiFi()) {
         lastWifiConnected = true;
+        startWebServer();
         syncNtp();
         struct tm t;
         if (getLocalTime(&t, 0)) {
@@ -395,7 +575,11 @@ void loop() {
     return;
   }
 
-  if (t.tm_mday != lastDay || now - lastFullRefreshMs >= FULL_REFRESH_MS) {
+  if (todosDirty) {
+    todosDirty = false;
+    drawFullScreen(t);
+  } else if (t.tm_mday != lastDay ||
+             now - lastFullRefreshMs >= FULL_REFRESH_MS) {
     drawFullScreen(t);
   } else if (t.tm_min != lastMinute) {
     drawTimePartial(t);
