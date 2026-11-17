@@ -3,9 +3,9 @@
 一款基于 **ESP32-C3** 与 **4.2 英寸黑白电子墨水屏** 的低成本桌面台历。
 设备通过 Wi-Fi 校时与获取信息，USB 持续供电，界面追求极简、低频刷新。
 
-> 状态：**实验 04 已完成（2026-11-17）**——Wi-Fi/NTP/月历/今日待办均已验证；
-> 待办通过本地网页编辑并存入 NVS。ESP32-C3 的 Wi-Fi TX 固定为 **11 dBm**。
-> 实验 03 已完成；实验 02 已首次点亮；实验 01 已完成。
+> 状态：**实验 05 已完成（2026-11-17）**——Wi-Fi/NTP/月历/待办/ChatGPT Plus 额度均已验证；
+> 额度由本机 Codex CLI helper 自动推送。ESP32-C3 的 Wi-Fi TX 固定为 **11 dBm**。
+> 实验 04/03/02/01 已完成。
 
 本项目与 `/home/hy/ai-desktop-robot/`（AI 桌宠机器人）完全独立，后者不属于本仓库范围。
 
@@ -67,13 +67,16 @@ PlatformIO 没有 "ESP32-C3 SuperMini" 官方板卡。`lolin_c3_mini` 与 SuperM
 ```text
 Smart-Calendar/
 ├── platformio.ini          # PlatformIO 工程配置
-├── src/main.cpp            # 实验 04 Wi-Fi/NTP/日历/待办固件（已烧录）
+├── src/main.cpp            # 实验 05 Wi-Fi/NTP/日历/待办/额度固件（已烧录）
 ├── include/epd_config.h    # 墨水屏引脚、尺寸与驱动类
 ├── include/secrets.example.h # Wi-Fi 凭据模板（secrets.h 不提交）
 ├── include/                # 其他项目头文件（预留）
 ├── lib/                    # 项目私有库（预留）
 ├── docs/progress.md        # 实验记录与进度
 ├── tools/                  # 辅助脚本 / udev 规则
+│   ├── codex_quota_push.py # Codex 额度推送 helper
+│   ├── smart-calendar-quota.service # 用户级 systemd 服务模板
+│   └── smart-calendar-quota.env.example # 服务环境模板
 ├── .venv/                  # 本地 PlatformIO 环境（不纳入版本管理）
 ├── README.md
 ├── AGENTS.md               # 开发规范与硬件安全约束
@@ -95,16 +98,18 @@ cd /home/hy/Smart-Calendar
 .venv/bin/pio device monitor --port /dev/ttyACM1 --baud 115200
 ```
 
-固件行为（实验 04，已烧录）：
+固件行为（实验 05，已烧录）：
 
 1. 连接 2.4 GHz Wi-Fi（凭据在 `include/secrets.h`，TX 固定 11 dBm）；
 2. NTP 校时，默认时区 `CST-8`；
-3. 顶部时间/日期，中部紧凑月历，下方显示 TODAY 和最多 3 条待办；
+3. 顶部时间/日期；中部左侧紧凑月历、右侧 ChatGPT Plus 5h/周额度面板；
+   下方显示 TODAY 和最多 3 条待办；
 4. 待办通过 `http://<设备IP>/` 编辑，保存在 NVS；
-5. 启动、跨日、Wi-Fi 状态变化、每小时、待办保存后全刷；每分钟只局刷时间区域；
-6. 底部显示网页入口 IP；串口输出连接状态与 30 秒心跳。
+5. 额度由电脑上的 Codex helper POST 到 `/quota`，保存在 NVS；
+6. 启动、跨日、Wi-Fi 状态变化、每小时、待办保存后全刷；时间/额度更新只局刷对应区域；
+7. 底部显示网页入口 IP；串口输出连接状态与 30 秒心跳。
 
-实验记录见 [`docs/progress.md`](docs/progress.md) 的“实验 04：今日待办”。
+实验记录见 [`docs/progress.md`](docs/progress.md) 的“实验 05：ChatGPT Plus 额度”。
 
 ## 实验 02 接线方案（已验证）
 
@@ -182,6 +187,65 @@ ESP32-C3 只支持 **2.4 GHz Wi-Fi**；5 GHz-only 网络无法连接。
 - Wi-Fi/NTP、网页编辑、3 条待办显示、完成勾选均验证通过；
 - 编译：RAM 16.6%，Flash 59.6%。
 
+## 实验 05：ChatGPT Plus 额度
+
+屏幕月历右侧显示 ChatGPT Plus 的 5 小时/周剩余额度。数据由电脑上的本地 helper
+从 Codex CLI 的 usage 接口读取并推送到 ESP32。
+
+### 数据源与限制
+
+- 数据源：Codex CLI 使用的 `chatgpt.com/backend-api/wham/usage` 接口（非官方公开 API）；
+- 只读取当前账号自己的 `used_percent` 和 `reset_at`，换算成剩余百分比；
+- token 只留在电脑的 `~/.codex/auth.json`，不写入仓库、不发送给 ESP32；
+- 接口可能随 OpenAI 更新失效；失效时屏幕显示 `stale` 或 `no data`，不编造数字；
+- token 过期后运行一次 `codex login`（或使用 Codex CLI）刷新。
+
+### 本地 helper
+
+```bash
+# 手动推送一次
+.venv/bin/python tools/codex_quota_push.py --esp32 http://<设备IP> --once
+
+# 持续推送（默认每 300 秒）
+.venv/bin/python tools/codex_quota_push.py --esp32 http://<设备IP> --interval 300
+```
+
+### 用户级 systemd 服务
+
+```bash
+cp tools/smart-calendar-quota.service ~/.config/systemd/user/
+cp tools/smart-calendar-quota.env.example ~/.config/smart-calendar-quota.env
+# 编辑 ~/.config/smart-calendar-quota.env：ESP32 IP、代理/NO_PROXY
+systemctl --user daemon-reload
+systemctl --user enable --now smart-calendar-quota.service
+loginctl enable-linger "$USER"
+```
+
+如果 ESP32 的 DHCP 地址变化，更新 `SMART_CALENDAR_URL` 和 `NO_PROXY` 后重启服务。
+如果电脑通过本地代理上网，`NO_PROXY` 必须包含 ESP32 的 IP，否则 `/quota` 也会走代理。
+
+### 屏幕布局
+
+```text
+时间 / 日期
+月历（左侧）       CHATGPT PLUS
+                   5h 100% 22:52
+                   wk 100% Tue 17:52
+                   upd 21:57
+TODAY + 3 条待办
+Web UI: <设备IP>
+```
+
+额度更新只局刷右侧面板；每小时/跨日/待办保存仍全刷。
+
+### 实验结果（2026-11-17）
+
+- 接口返回 `plan_type=plus`，5h/周 `used_percent = 0`（剩余 100%）；
+- helper 推送成功：`5h=100% (22:52)`、`wk=100% (Tue 17:52)`，ESP32 返回 200；
+- 串口确认额度更新为局刷：`_Update_Part : 399999`；
+- 用户级服务已启用并运行，`linger=yes`；
+- 编译：RAM 16.6%，Flash 60.0%。
+
 ## 实验 02 结果摘要
 
 - 日期：2026-11-17
@@ -209,6 +273,6 @@ ESP32-C3 只支持 **2.4 GHz Wi-Fi**；5 GHz-only 网络无法连接。
 | 02 | ✅ 已完成（2026-11-17）：核实兼容、接线并点亮墨水屏，显示 Hello World |
 | 03 | ✅ 已完成（2026-11-17）：Wi-Fi 联网、NTP 校时、日期与日历显示 |
 | 04 | ✅ 已完成（2026-11-17）：极简信息布局，显示今日待办（最多 3 项） |
-| 05 | 研究并接入 AI 工具使用额度数据 |
+| 05 | ✅ 已完成（2026-11-17）：接入 ChatGPT Plus 5h/周额度（Codex usage 接口） |
 | 06 | 刷新策略、异常恢复、长期运行稳定性 |
 | 07 | 桌面支架或外壳 |

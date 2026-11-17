@@ -20,10 +20,11 @@
 #error "Missing include/secrets.h - copy include/secrets.example.h and fill in Wi-Fi credentials."
 #endif
 
-// Experiment 04 - Wi-Fi, NTP, calendar and today's todos.
+// Experiment 05 - Wi-Fi, NTP, calendar, todos and ChatGPT Plus quota.
 //
 // Todos are entered from a small web page served by the ESP32 and stored in
-// NVS (Preferences). The e-paper shows at most three non-empty todo items.
+// NVS (Preferences). A local helper reads the Codex CLI usage endpoint and
+// POSTs the 5-hour/weekly remaining quota to /quota; the token stays on the PC.
 // Current fonts are ASCII-only; non-ASCII bytes are displayed as '?'.
 
 namespace {
@@ -49,7 +50,7 @@ constexpr int16_t MONTH_BASELINE = 88;
 constexpr int16_t WEEKDAY_BASELINE = 104;
 constexpr int16_t GRID_X = 11;
 constexpr int16_t GRID_Y = 108;
-constexpr int16_t CELL_W = 54;
+constexpr int16_t CELL_W = 35;
 constexpr int16_t CELL_H = 18;
 constexpr int16_t GRID_ROWS = 6;
 constexpr int16_t TODOS_TITLE_BASELINE = 230;
@@ -57,6 +58,19 @@ constexpr int16_t TODO_BASELINES[kMaxTodos] = {246, 261, 276};
 constexpr int16_t STATUS_BASELINE = 294;
 constexpr int16_t TIME_PARTIAL_Y = 16;
 constexpr int16_t TIME_PARTIAL_H = 40;
+
+// ChatGPT quota panel to the right of the month grid.
+constexpr int16_t QUOTA_SEPARATOR_X = 262;
+constexpr int16_t QUOTA_TEXT_X = 268;
+constexpr int16_t QUOTA_TITLE_Y = 122;
+constexpr int16_t QUOTA_LINE1_Y = 142;
+constexpr int16_t QUOTA_LINE2_Y = 160;
+constexpr int16_t QUOTA_LINE3_Y = 178;
+constexpr int16_t QUOTA_LINE4_Y = 196;
+constexpr int16_t QUOTA_PARTIAL_X = 264;
+constexpr int16_t QUOTA_PARTIAL_Y = 104;
+constexpr int16_t QUOTA_PARTIAL_W = 128;
+constexpr int16_t QUOTA_PARTIAL_H = 112;
 
 const char* const MONTH_NAMES[] = {"January", "February", "March",     "April",
                                    "May",     "June",     "July",      "August",
@@ -73,6 +87,16 @@ String todoText[kMaxTodos];
 bool todoDone[kMaxTodos] = {false, false, false};
 bool webServerStarted = false;
 bool todosDirty = false;
+bool quotaDirty = false;
+bool mainScreenVisible = false;
+
+String quotaPlan = "plus";
+int quotaH5 = -1;
+String quotaH5Reset;
+int quotaWk = -1;
+String quotaWkReset;
+String quotaUpdated;
+uint32_t quotaUpdatedEpoch = 0;
 
 bool ntpSynced = false;
 int lastMinute = -1;
@@ -145,6 +169,43 @@ void saveTodos() {
   prefs.end();
 }
 
+String cleanShort(const String& input, size_t maxLen) {
+  String out = input;
+  out.replace("\r", " ");
+  out.replace("\n", " ");
+  out.trim();
+  if (out.length() > maxLen) {
+    out = out.substring(0, maxLen);
+  }
+  return out;
+}
+
+void loadQuota() {
+  Preferences prefs;
+  prefs.begin("quota", true);
+  quotaPlan = prefs.getString("plan", "plus");
+  quotaH5 = prefs.getInt("h5", -1);
+  quotaH5Reset = prefs.getString("h5r", "");
+  quotaWk = prefs.getInt("wk", -1);
+  quotaWkReset = prefs.getString("wkr", "");
+  quotaUpdated = prefs.getString("upd", "");
+  quotaUpdatedEpoch = prefs.getULong("updts", 0);
+  prefs.end();
+}
+
+void saveQuota() {
+  Preferences prefs;
+  prefs.begin("quota", false);
+  prefs.putString("plan", quotaPlan);
+  prefs.putInt("h5", quotaH5);
+  prefs.putString("h5r", quotaH5Reset);
+  prefs.putInt("wk", quotaWk);
+  prefs.putString("wkr", quotaWkReset);
+  prefs.putString("upd", quotaUpdated);
+  prefs.putULong("updts", quotaUpdatedEpoch);
+  prefs.end();
+}
+
 void handleRoot() {
   String page;
   page.reserve(2048);
@@ -152,7 +213,8 @@ void handleRoot() {
   page += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
   page += F("<title>Smart Calendar</title>");
   page += F("<style>body{font-family:system-ui,sans-serif;margin:20px;max-width:560px;}"
-            "h1{font-size:20px}.row{display:flex;align-items:center;gap:8px;"
+            "h1{font-size:20px}h2{font-size:17px;margin-top:24px}"
+            ".row{display:flex;align-items:center;gap:8px;"
             "margin:10px 0}input[type=text]{flex:1;min-width:0;padding:8px;"
             "font-size:16px}input[type=checkbox]{width:22px;height:22px}"
             "button{padding:10px 18px;font-size:16px;margin-top:8px}"
@@ -176,7 +238,24 @@ void handleRoot() {
     page += htmlEscape(todoText[i]);
     page += F("'></div>");
   }
-  page += F("<button type='submit'>Save</button></form></body></html>");
+  page += F("<button type='submit'>Save</button></form>");
+  page += F("<h2>ChatGPT Plus quota</h2>");
+  if (quotaH5 < 0 || quotaWk < 0) {
+    page += F("<p>No quota data yet. Run <code>tools/codex_quota_push.py</code> "
+              "on the computer.</p>");
+  } else {
+    const String h5r = htmlEscape(quotaH5Reset);
+    const String wkr = htmlEscape(quotaWkReset);
+    const String upd = htmlEscape(quotaUpdated);
+    char qbuf[256];
+    snprintf(qbuf, sizeof(qbuf),
+             "<p>5h: %d%% (resets %s)<br>Week: %d%% (resets %s)<br>"
+             "Updated: %s</p>",
+             quotaH5, h5r.c_str(), quotaWk, wkr.c_str(), upd.c_str());
+    page += qbuf;
+  }
+  page += F("<p class='note'>Auto-updated by the local Codex quota helper; "
+            "the OpenAI token stays on the computer.</p></body></html>");
   server.send(200, "text/html; charset=utf-8", page);
 }
 
@@ -202,13 +281,44 @@ void handleSave() {
   server.send(303, "text/plain", "");
 }
 
+void handleQuota() {
+  const String plan = cleanShort(server.arg("plan"), 12);
+  if (plan.length() > 0) {
+    quotaPlan = plan;
+  }
+  if (server.hasArg("h5")) {
+    quotaH5 = constrain(server.arg("h5").toInt(), 0, 100);
+  }
+  if (server.hasArg("wk")) {
+    quotaWk = constrain(server.arg("wk").toInt(), 0, 100);
+  }
+  if (server.hasArg("h5r")) {
+    quotaH5Reset = cleanShort(server.arg("h5r"), 12);
+  }
+  if (server.hasArg("wkr")) {
+    quotaWkReset = cleanShort(server.arg("wkr"), 12);
+  }
+  if (server.hasArg("upd")) {
+    quotaUpdated = cleanShort(server.arg("upd"), 8);
+  }
+  if (server.hasArg("upd_ts")) {
+    quotaUpdatedEpoch = static_cast<uint32_t>(
+        strtoul(server.arg("upd_ts").c_str(), nullptr, 10));
+  }
+  saveQuota();
+  quotaDirty = true;
+  server.send(200, "text/plain", "OK");
+}
+
 void startWebServer() {
   if (webServerStarted) return;
   server.on("/", HTTP_GET, handleRoot);
   server.on("/save", HTTP_POST, handleSave);
+  server.on("/quota", HTTP_POST, handleQuota);
   server.begin();
   webServerStarted = true;
   Serial.printf("Web UI: http://%s/\n", WiFi.localIP().toString().c_str());
+  Serial.println("Quota endpoint: POST /quota");
 }
 
 void drawTime(const struct tm& t) {
@@ -331,6 +441,48 @@ void drawTodos() {
   }
 }
 
+void drawQuotaPanel() {
+  display.setFont(&FreeSansBold9pt7b);
+  display.setTextColor(GxEPD_BLACK);
+  String title = "CHATGPT";
+  if (quotaPlan.length() > 0) {
+    String plan = quotaPlan;
+    plan.toUpperCase();
+    title += " ";
+    title += plan;
+  }
+  display.setCursor(QUOTA_TEXT_X, QUOTA_TITLE_Y);
+  display.print(title);
+
+  display.setFont(&FreeSans9pt7b);
+  if (quotaH5 < 0 || quotaWk < 0) {
+    display.setCursor(QUOTA_TEXT_X, QUOTA_LINE1_Y);
+    display.print("no data");
+    display.setCursor(QUOTA_TEXT_X, QUOTA_LINE2_Y);
+    display.print("run helper");
+    return;
+  }
+
+  char buf[32];
+  snprintf(buf, sizeof(buf), "5h %3d%% %s", quotaH5, quotaH5Reset.c_str());
+  display.setCursor(QUOTA_TEXT_X, QUOTA_LINE1_Y);
+  display.print(buf);
+
+  snprintf(buf, sizeof(buf), "wk %3d%% %s", quotaWk, quotaWkReset.c_str());
+  display.setCursor(QUOTA_TEXT_X, QUOTA_LINE2_Y);
+  display.print(buf);
+
+  snprintf(buf, sizeof(buf), "upd %s", quotaUpdated.c_str());
+  display.setCursor(QUOTA_TEXT_X, QUOTA_LINE3_Y);
+  display.print(buf);
+
+  if (quotaUpdatedEpoch > 0 &&
+      time(nullptr) - static_cast<time_t>(quotaUpdatedEpoch) > 6 * 3600) {
+    display.setCursor(QUOTA_TEXT_X, QUOTA_LINE4_Y);
+    display.print("stale");
+  }
+}
+
 void drawStatus() {
   char buf[48];
   if (WiFi.status() == WL_CONNECTED) {
@@ -350,6 +502,9 @@ void drawFullScreen(const struct tm& t) {
     drawTime(t);
     drawDate(t);
     drawCalendar(t);
+    drawQuotaPanel();
+    display.drawLine(QUOTA_SEPARATOR_X, GRID_Y, QUOTA_SEPARATOR_X,
+                     GRID_Y + GRID_ROWS * CELL_H, GxEPD_BLACK);
     drawTodos();
     drawStatus();
   } while (display.nextPage());
@@ -357,6 +512,8 @@ void drawFullScreen(const struct tm& t) {
   lastMinute = t.tm_min;
   lastDay = t.tm_mday;
   lastFullRefreshMs = millis();
+  mainScreenVisible = true;
+  quotaDirty = false;
 }
 
 void drawTimePartial(const struct tm& t) {
@@ -368,6 +525,16 @@ void drawTimePartial(const struct tm& t) {
   } while (display.nextPage());
 
   lastMinute = t.tm_min;
+}
+
+void drawQuotaPartial() {
+  display.setPartialWindow(QUOTA_PARTIAL_X, QUOTA_PARTIAL_Y, QUOTA_PARTIAL_W,
+                           QUOTA_PARTIAL_H);
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    drawQuotaPanel();
+  } while (display.nextPage());
 }
 
 const char* wifiStatusName(wl_status_t status) {
@@ -444,6 +611,7 @@ bool syncNtp() {
 }
 
 void drawConnectingScreen() {
+  mainScreenVisible = false;
   display.setFullWindow();
   display.firstPage();
   do {
@@ -455,6 +623,7 @@ void drawConnectingScreen() {
 }
 
 void drawNoTimeScreen(bool wifiConnected) {
+  mainScreenVisible = false;
   display.setFullWindow();
   display.firstPage();
   do {
@@ -484,8 +653,8 @@ void setup() {
 
   Serial.println();
   Serial.println("==========================================");
-  Serial.println(" Smart Calendar - Experiment 04");
-  Serial.println(" Wi-Fi + NTP + calendar + todos");
+  Serial.println(" Smart Calendar - Experiment 05");
+  Serial.println(" Wi-Fi + NTP + calendar + todos + ChatGPT quota");
   Serial.println("==========================================");
   Serial.printf("SPI  : SCK=%d MOSI=%d CS=%d\n", epd::PIN_SCK, epd::PIN_MOSI,
                 epd::PIN_CS);
@@ -500,6 +669,7 @@ void setup() {
   pinMode(epd::PIN_BUSY, INPUT_PULLUP);
 
   loadTodos();
+  loadQuota();
   drawConnectingScreen();
 
   const bool wifiConnected = connectWiFi();
@@ -578,6 +748,9 @@ void loop() {
   if (todosDirty) {
     todosDirty = false;
     drawFullScreen(t);
+  } else if (quotaDirty && mainScreenVisible) {
+    quotaDirty = false;
+    drawQuotaPartial();
   } else if (t.tm_mday != lastDay ||
              now - lastFullRefreshMs >= FULL_REFRESH_MS) {
     drawFullScreen(t);

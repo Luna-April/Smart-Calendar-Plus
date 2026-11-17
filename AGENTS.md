@@ -42,6 +42,12 @@
 - 今日待办数据源：ESP32 本地网页（`http://<设备IP>/`）编辑，存入 NVS
   （`Preferences`，命名空间 `todos`），不依赖外部服务；最多 3 条、每条 40 字符。
   当前墨水屏字体只支持 ASCII，中文显示为 `?`。
+- AI 使用额度数据源：本机 Codex CLI 的未公开
+  `chatgpt.com/backend-api/wham/usage` 接口，由 `tools/codex_quota_push.py`
+  读取 `~/.codex/auth.json` 并推送到 ESP32 `/quota`。token 只留在电脑上，
+  禁止提交 `~/.codex/auth.json`，禁止把 token 写入固件或仓库。接口非官方、
+  可能变化；失败时显示 stale/no data，禁止编造额度。当前显示 ChatGPT Plus
+  5 小时/周剩余百分比。
 - 墨水屏低频刷新，避免残影；**不要为了显示秒数而整屏刷新**。
 - AI 使用数据必须来自真实、可靠的数据源，禁止编造；区分订阅额度与 API Token 用量。
 - 优先复用已有工具链与库，不擅自安装不必要的系统级依赖或修改全局环境。

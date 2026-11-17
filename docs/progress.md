@@ -746,6 +746,74 @@ Flash: [======    ]  59.6% (used 781546 bytes from 1310720 bytes)
 
 **实验 04 完成。**
 
+---
+
+## 实验 05：ChatGPT Plus 额度（2026-11-17）
+
+### 1. 目标
+
+- 在月历右侧显示 ChatGPT Plus 的 5 小时/周剩余额度；
+- 自动更新，不手动填写；
+- 数据真实，不抓 ChatGPT 网页 session、不编造。
+
+### 2. 数据源与决策
+
+- ChatGPT Plus 订阅额度没有官方公开 API；
+- 采用 Codex CLI 使用的未公开接口：
+  `GET https://chatgpt.com/backend-api/wham/usage`
+  带 `Authorization: Bearer <access_token>` 和 `ChatGPT-Account-Id`；
+- 本机 `~/.codex/auth.json` 已有 Codex CLI 登录凭据；
+- 接口返回 `plan_type`、`rate_limit.primary_window`（18000 s = 5 h）和
+  `secondary_window`（604800 s = 7 d），含 `used_percent`、`reset_at`；
+- 只取当前账号自己的额度，token 只留在电脑，不发送给 ESP32、不提交仓库；
+- 接口非官方，可能随 OpenAI 更新失效；失败时显示 stale/no data，不编造。
+
+### 3. 实现
+
+- ESP32：
+  - WebServer 新增 `POST /quota`，接收 `plan/h5/h5r/wk/wkr/upd/upd_ts`；
+  - NVS namespace `quota` 保存这些字段；
+  - 月历左移并缩窄到 7×35 px，右侧增加 `CHATGPT PLUS` 面板；
+  - 额度更新只局刷右侧面板（x=264, y=104, w=128, h=112），
+    时间仍每分钟局刷；
+  - 网页增加只读的 ChatGPT 额度区。
+- 电脑 helper：`tools/codex_quota_push.py`
+  - 读取 `~/.codex/auth.json`；
+  - 查询 `wham/usage`，把 `used_percent` 换成剩余百分比；
+  - 格式化为 5h `HH:MM`、周 `%a %H:%M`；
+  - POST 到 ESP32 `/quota`，打印状态但不打印 token/账号；
+  - `--once` / `--interval 300`。
+- 用户级 systemd：
+  - `tools/smart-calendar-quota.service` 安装到 `~/.config/systemd/user/`；
+  - `tools/smart-calendar-quota.env.example` 复制到
+    `~/.config/smart-calendar-quota.env`；
+  - 已 `enable --now`，并执行 `loginctl enable-linger hy`。
+- 代理问题：systemd 服务不继承 shell 的
+  `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY`，首次启动报
+  `Network is unreachable`；在 env 文件加入代理变量，并设置
+  `NO_PROXY=<ESP32-IP>,localhost,127.0.0.1`，重启后推送成功。
+
+### 4. 编译结果
+
+```text
+RAM:   [==        ]  16.6% (used 54340 bytes from 327680 bytes)
+Flash: [======    ]  60.0% (used 786830 bytes from 1310720 bytes)
+```
+
+### 5. 测试结果（2026-11-17 21:57）
+
+- 接口测试：HTTP 200，`plan_type=plus`，
+  primary 5h `used_percent=0`，secondary weekly `used_percent=0`；
+- helper 推送：
+  `[21:57] plan=plus 5h=100% (22:52) wk=100% (Tue 17:52) -> ESP32 200`；
+- 串口：`_Update_Part : 399999`（额度面板局刷）；
+- 网页：`5h: 100% (resets 22:52)`、`Week: 100% (resets Tue 17:52)`、
+  `Updated: 21:57`；
+- systemd 服务 active，`linger=yes`；
+- 用户确认屏幕额度面板显示正常。
+
+**实验 05 完成。**
+
 下一步：
 
 1. 核对路由器 2.4 GHz Wi-Fi 密码，更新 `include/secrets.h`

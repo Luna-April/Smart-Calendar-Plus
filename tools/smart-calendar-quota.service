@@ -1,0 +1,16 @@
+[Unit]
+Description=Smart Calendar ChatGPT Plus quota pusher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Smart-Calendar
+EnvironmentFile=%h/.config/smart-calendar-quota.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/Smart-Calendar/.venv/bin/python %h/Smart-Calendar/tools/codex_quota_push.py --interval 300
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
