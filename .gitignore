@@ -20,6 +20,10 @@ venv/
 *.hex
 firmware/
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Secrets: Wi-Fi credentials, API keys, tokens
 include/secrets.h
 secrets.h
