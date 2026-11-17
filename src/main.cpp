@@ -306,18 +306,9 @@ UiData makeUiData(const struct tm& t) {
   data.day = t.tm_mday;
   data.weekday = t.tm_wday;
 
-  bool anyTodo = false;
   for (int i = 0; i < kMaxTodos; ++i) {
     data.todos[i].text = todoText[i];
     data.todos[i].done = todoDone[i];
-    if (todoText[i].length() > 0) {
-      anyTodo = true;
-    }
-  }
-  if (!anyTodo) {
-    data.todos[0].text = "学习 ROS2";
-    data.todos[1].text = "调试墨水屏";
-    data.todos[2].text = "整理项目文档";
   }
 
   data.hasQuota = (quotaH5 >= 0 && quotaWk >= 0);
