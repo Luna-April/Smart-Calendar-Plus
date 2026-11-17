@@ -32,16 +32,20 @@
 
 - 保持代码简单、模块化，但避免过早引入复杂架构。
 - 第一版功能范围：时间日期/星期、简洁月历、今日待办（最多 3 项）、AI 使用情况。
+  按用户偏好，**表格月历已移除**，保留日期/星期；今日待办区扩大。
 - 墨水屏驱动类固定为 `GxEPD2_420_GDEY042T81`（GxEPD2 1.6.9），不得误用 `GxEPD2_420`
   （后者对应 GDEW042T2 / UC8176）。
+- 中文字体依赖：`olikraus/U8g2_for_Adafruit_GFX@1.8.0` + `olikraus/U8g2@2.36.18`，
+  字体 `u8g2_font_wqy16_t_gb2312`（GB2312 常用字）。
 - 墨水屏 GPIO 映射以 `include/epd_config.h` 为准：SCK=4、MOSI=6、CS=7、DC=3、RST=2、BUSY=10
   （按 V1.5 驱动板卖家的 ESP32C3 接线图）。
   修改引脚必须同步更新 `docs/progress.md` 的接线表。
 - 本机 ESP32-C3 SuperMini 的 Wi-Fi 发射功率固定为 `WIFI_POWER_11dBm`。
   19.5 dBm 最大功率会导致 WPA2 认证失败（disconnect reason 2/202），不要改回最大功率。
 - 今日待办数据源：ESP32 本地网页（`http://<设备IP>/`）编辑，存入 NVS
-  （`Preferences`，命名空间 `todos`），不依赖外部服务；最多 3 条、每条 40 字符。
-  当前墨水屏字体只支持 ASCII，中文显示为 `?`。
+  （`Preferences`，命名空间 `todos`），不依赖外部服务；最多 3 条、每条 40 个字符。
+  已使用 U8g2 `u8g2_font_wqy16_t_gb2312` 支持常用中文（GB2312）；
+  每条最多显示 2 行，emoji 可能无法显示。
 - AI 使用额度数据源：本机 Codex CLI 的未公开
   `chatgpt.com/backend-api/wham/usage` 接口，由 `tools/codex_quota_push.py`
   读取 `~/.codex/auth.json` 并推送到 ESP32 `/quota`。token 只留在电脑上，

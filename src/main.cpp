@@ -6,11 +6,10 @@
 #include <time.h>
 
 #include <Adafruit_GFX.h>
-#include <Fonts/FreeSansBold9pt7b.h>
-#include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold24pt7b.h>
 #include <GxEPD2_BW.h>
+#include <U8g2_for_Adafruit_GFX.h>
 
 #include "epd_config.h"
 
@@ -41,46 +40,30 @@ constexpr uint32_t NTP_RETRY_MS = 30000;
 constexpr uint32_t FULL_REFRESH_MS = 3600000UL;  // 1 hour
 
 constexpr int kMaxTodos = 3;
-constexpr size_t kMaxTodoLen = 40;
+constexpr size_t kMaxTodoChars = 40;
 
-// Layout: time/date, month calendar, today's todos, status line.
-constexpr int16_t TIME_BASELINE = 44;
-constexpr int16_t DATE_BASELINE = 70;
-constexpr int16_t MONTH_BASELINE = 88;
-constexpr int16_t WEEKDAY_BASELINE = 104;
-constexpr int16_t GRID_X = 11;
-constexpr int16_t GRID_Y = 108;
-constexpr int16_t CELL_W = 35;
-constexpr int16_t CELL_H = 18;
-constexpr int16_t GRID_ROWS = 6;
-constexpr int16_t TODOS_TITLE_BASELINE = 230;
-constexpr int16_t TODO_BASELINES[kMaxTodos] = {246, 261, 276};
-constexpr int16_t STATUS_BASELINE = 294;
+// Layout: large time, Chinese date, large todo area, compact quota/IP footer.
+constexpr int16_t TIME_BASELINE = 52;
+constexpr int16_t DATE_BASELINE = 92;
+constexpr int16_t TODOS_TITLE_BASELINE = 120;
+constexpr int16_t TODO_FIRST_BASELINE = 148;
+constexpr int16_t TODO_ITEM_SPACING = 40;
+constexpr int16_t TODO_LINE_HEIGHT = 18;
+constexpr int16_t TODO_MAX_LINES = 2;
+constexpr int16_t QUOTA_BASELINE = 274;
+constexpr int16_t IP_BASELINE = 292;
 constexpr int16_t TIME_PARTIAL_Y = 16;
 constexpr int16_t TIME_PARTIAL_H = 40;
+constexpr int16_t BOTTOM_PARTIAL_Y = 256;
+constexpr int16_t BOTTOM_PARTIAL_H = 40;
 
-// ChatGPT quota panel to the right of the month grid.
-constexpr int16_t QUOTA_SEPARATOR_X = 262;
-constexpr int16_t QUOTA_TEXT_X = 268;
-constexpr int16_t QUOTA_TITLE_Y = 122;
-constexpr int16_t QUOTA_LINE1_Y = 142;
-constexpr int16_t QUOTA_LINE2_Y = 160;
-constexpr int16_t QUOTA_LINE3_Y = 178;
-constexpr int16_t QUOTA_LINE4_Y = 196;
-constexpr int16_t QUOTA_PARTIAL_X = 264;
-constexpr int16_t QUOTA_PARTIAL_Y = 104;
-constexpr int16_t QUOTA_PARTIAL_W = 128;
-constexpr int16_t QUOTA_PARTIAL_H = 112;
-
-const char* const MONTH_NAMES[] = {"January", "February", "March",     "April",
-                                   "May",     "June",     "July",      "August",
-                                   "September", "October", "November", "December"};
-const char* const WEEKDAY_NAMES[] = {"Sunday",   "Monday", "Tuesday", "Wednesday",
-                                     "Thursday", "Friday", "Saturday"};
-const char* const WEEKDAY_SHORT[] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
+const char* const WEEKDAY_CN[] = {"星期日", "星期一", "星期二", "星期三",
+                                  "星期四", "星期五", "星期六"};
 
 GxEPD2_BW<epd::Driver, epd::HEIGHT> display(
     epd::Driver(epd::PIN_CS, epd::PIN_DC, epd::PIN_RST, epd::PIN_BUSY));
+
+U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 
 WebServer server(80);
 String todoText[kMaxTodos];
@@ -118,12 +101,83 @@ void drawCentered(Adafruit_GFX& gfx, const char* text, int16_t baseline,
   gfx.print(text);
 }
 
-int daysInMonth(int year, int month) {
-  static const uint8_t days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if (month == 1 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
-    return 29;
+void setChineseFont() {
+  u8g2Fonts.setFont(u8g2_font_wqy16_t_gb2312);
+  u8g2Fonts.setFontMode(1);  // transparent background
+  u8g2Fonts.setFontDirection(0);
+  u8g2Fonts.setForegroundColor(GxEPD_BLACK);
+  u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
+}
+
+void drawCenteredUTF8(const char* text, int16_t baseline) {
+  setChineseFont();
+  const int16_t w = static_cast<int16_t>(u8g2Fonts.getUTF8Width(text));
+  u8g2Fonts.drawUTF8((epd::WIDTH - w) / 2, baseline, text);
+}
+
+void drawWrappedUTF8(const String& text, int16_t x, int16_t firstBaseline,
+                     int maxLines, int16_t maxWidth) {
+  setChineseFont();
+  String line;
+  int lineNo = 0;
+  int16_t y = firstBaseline;
+
+  for (size_t i = 0; i < text.length();) {
+    const uint8_t c = text[i];
+    size_t len = 1;
+    if ((c & 0xE0) == 0xC0) {
+      len = 2;
+    } else if ((c & 0xF0) == 0xE0) {
+      len = 3;
+    } else if ((c & 0xF8) == 0xF0) {
+      len = 4;
+    }
+    if (i + len > text.length()) {
+      len = text.length() - i;
+    }
+
+    String next = line;
+    next += text.substring(i, i + len);
+    if (line.length() > 0 &&
+        u8g2Fonts.getUTF8Width(next.c_str()) > maxWidth) {
+      u8g2Fonts.drawUTF8(x, y, line.c_str());
+      line = text.substring(i, i + len);
+      y += TODO_LINE_HEIGHT;
+      ++lineNo;
+      if (lineNo >= maxLines) {
+        return;
+      }
+    } else {
+      line = next;
+    }
+    i += len;
   }
-  return days[month];
+
+  if (line.length() > 0 && lineNo < maxLines) {
+    u8g2Fonts.drawUTF8(x, y, line.c_str());
+  }
+}
+
+String truncateUtf8(const String& input, size_t maxChars) {
+  size_t chars = 0;
+  size_t i = 0;
+  while (i < input.length() && chars < maxChars) {
+    const uint8_t c = input[i];
+    size_t len = 1;
+    if ((c & 0xE0) == 0xC0) {
+      len = 2;
+    } else if ((c & 0xF0) == 0xE0) {
+      len = 3;
+    } else if ((c & 0xF8) == 0xF0) {
+      len = 4;
+    }
+    if (i + len > input.length()) {
+      break;
+    }
+    i += len;
+    ++chars;
+  }
+  return input.substring(0, i);
 }
 
 String htmlEscape(const String& input) {
@@ -208,7 +262,7 @@ void saveQuota() {
 
 void handleRoot() {
   String page;
-  page.reserve(2048);
+  page.reserve(2560);
   page += F("<!doctype html><html><head><meta charset='utf-8'>");
   page += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
   page += F("<title>Smart Calendar</title>");
@@ -219,9 +273,9 @@ void handleRoot() {
             "font-size:16px}input[type=checkbox]{width:22px;height:22px}"
             "button{padding:10px 18px;font-size:16px;margin-top:8px}"
             ".note{color:#555;font-size:13px;line-height:1.4}</style></head><body>");
-  page += F("<h1>Smart Calendar - Today</h1>");
-  page += F("<p class='note'>E-paper text is ASCII only in this experiment; "
-            "Chinese characters will show as '?'. Max 40 characters each.</p>");
+  page += F("<h1>Smart Calendar - 今日待办</h1>");
+  page += F("<p class='note'>最多 3 条，每条 40 个字符；支持中文（GB2312），"
+            "emoji 可能无法显示。</p>");
   page += F("<form method='POST' action='/save'>");
   for (int i = 0; i < kMaxTodos; ++i) {
     char name[16];
@@ -239,23 +293,23 @@ void handleRoot() {
     page += F("'></div>");
   }
   page += F("<button type='submit'>Save</button></form>");
-  page += F("<h2>ChatGPT Plus quota</h2>");
+  page += F("<h2>ChatGPT Plus 额度</h2>");
   if (quotaH5 < 0 || quotaWk < 0) {
-    page += F("<p>No quota data yet. Run <code>tools/codex_quota_push.py</code> "
-              "on the computer.</p>");
+    page += F("<p>暂无额度数据，请在电脑上运行 "
+              "<code>tools/codex_quota_push.py</code>。</p>");
   } else {
     const String h5r = htmlEscape(quotaH5Reset);
     const String wkr = htmlEscape(quotaWkReset);
     const String upd = htmlEscape(quotaUpdated);
     char qbuf[256];
     snprintf(qbuf, sizeof(qbuf),
-             "<p>5h: %d%% (resets %s)<br>Week: %d%% (resets %s)<br>"
-             "Updated: %s</p>",
+             "<p>5 小时: %d%% (重置 %s)<br>本周: %d%% (重置 %s)<br>"
+             "更新: %s</p>",
              quotaH5, h5r.c_str(), quotaWk, wkr.c_str(), upd.c_str());
     page += qbuf;
   }
-  page += F("<p class='note'>Auto-updated by the local Codex quota helper; "
-            "the OpenAI token stays on the computer.</p></body></html>");
+  page += F("<p class='note'>由本机 Codex helper 自动更新；"
+            "token 只留在电脑上。</p></body></html>");
   server.send(200, "text/html; charset=utf-8", page);
 }
 
@@ -267,10 +321,7 @@ void handleSave() {
     text.replace("\r", " ");
     text.replace("\n", " ");
     text.trim();
-    if (text.length() > kMaxTodoLen) {
-      text = text.substring(0, kMaxTodoLen);
-    }
-    todoText[i] = text;
+    todoText[i] = truncateUtf8(text, kMaxTodoChars);
 
     snprintf(name, sizeof(name), "done%d", i);
     todoDone[i] = server.hasArg(name);
@@ -324,174 +375,77 @@ void startWebServer() {
 void drawTime(const struct tm& t) {
   char buf[8];
   snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
-  drawCentered(display, buf, TIME_BASELINE, &FreeSansBold18pt7b);
+  drawCentered(display, buf, TIME_BASELINE, &FreeSansBold24pt7b);
 }
 
 void drawDate(const struct tm& t) {
-  char buf[40];
-  snprintf(buf, sizeof(buf), "%04d-%02d-%02d  %s", t.tm_year + 1900,
-           t.tm_mon + 1, t.tm_mday, WEEKDAY_NAMES[t.tm_wday]);
-  drawCentered(display, buf, DATE_BASELINE, &FreeSans9pt7b);
-}
-
-void drawCalendar(const struct tm& t) {
-  char buf[32];
-  snprintf(buf, sizeof(buf), "%s %04d", MONTH_NAMES[t.tm_mon], t.tm_year + 1900);
-  drawCentered(display, buf, MONTH_BASELINE, &FreeSans9pt7b);
-
-  display.setFont(&FreeSans9pt7b);
-  display.setTextColor(GxEPD_BLACK);
-  for (int col = 0; col < 7; ++col) {
-    const char* label = WEEKDAY_SHORT[col];
-    int16_t tbx, tby;
-    uint16_t tbw, tbh;
-    display.getTextBounds(label, 0, 0, &tbx, &tby, &tbw, &tbh);
-    display.setCursor(GRID_X + col * CELL_W + (CELL_W - tbw) / 2 - tbx,
-                      WEEKDAY_BASELINE);
-    display.print(label);
-  }
-
-  // Grid lines first, day numbers on top.
-  display.drawRect(GRID_X, GRID_Y, 7 * CELL_W, GRID_ROWS * CELL_H, GxEPD_BLACK);
-  for (int col = 1; col < 7; ++col) {
-    display.drawLine(GRID_X + col * CELL_W, GRID_Y,
-                     GRID_X + col * CELL_W, GRID_Y + GRID_ROWS * CELL_H,
-                     GxEPD_BLACK);
-  }
-  for (int row = 1; row < GRID_ROWS; ++row) {
-    display.drawLine(GRID_X, GRID_Y + row * CELL_H, GRID_X + 7 * CELL_W,
-                     GRID_Y + row * CELL_H, GxEPD_BLACK);
-  }
-
-  struct tm first = t;
-  first.tm_mday = 1;
-  first.tm_hour = 12;
-  first.tm_min = 0;
-  first.tm_sec = 0;
-  first.tm_isdst = -1;
-  const time_t firstTime = mktime(&first);
-  localtime_r(&firstTime, &first);
-  const int startCol = (first.tm_wday + 6) % 7;  // Monday = 0
-  const int days = daysInMonth(t.tm_year + 1900, t.tm_mon);
-
-  for (int day = 1; day <= days; ++day) {
-    const int index = startCol + day - 1;
-    const int col = index % 7;
-    const int row = index / 7;
-    const int x = GRID_X + col * CELL_W;
-    const int y = GRID_Y + row * CELL_H;
-
-    char dayBuf[3];
-    snprintf(dayBuf, sizeof(dayBuf), "%d", day);
-    int16_t tbx, tby;
-    uint16_t tbw, tbh;
-    display.getTextBounds(dayBuf, 0, 0, &tbx, &tby, &tbw, &tbh);
-
-    if (day == t.tm_mday) {
-      display.fillRect(x + 2, y + 1, CELL_W - 4, CELL_H - 2, GxEPD_BLACK);
-      display.setTextColor(GxEPD_WHITE);
-    } else {
-      display.setTextColor(GxEPD_BLACK);
-    }
-    display.setCursor(x + (CELL_W - tbw) / 2 - tbx, y + 14);
-    display.print(dayBuf);
-    display.setTextColor(GxEPD_BLACK);
-  }
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%04d年%02d月%02d日 %s", t.tm_year + 1900,
+           t.tm_mon + 1, t.tm_mday, WEEKDAY_CN[t.tm_wday]);
+  drawCenteredUTF8(buf, DATE_BASELINE);
 }
 
 void drawTodos() {
-  display.setFont(&FreeSansBold9pt7b);
-  display.setTextColor(GxEPD_BLACK);
-  display.setCursor(12, TODOS_TITLE_BASELINE);
-  display.print("TODAY");
+  setChineseFont();
+  u8g2Fonts.drawUTF8(12, TODOS_TITLE_BASELINE, "今日待办");
 
-  display.setFont(&FreeSans9pt7b);
   int line = 0;
   for (int i = 0; i < kMaxTodos; ++i) {
     if (todoText[i].length() == 0) continue;
-    const int y = TODO_BASELINES[line];
-    const int box = 8;
+    const int16_t firstY = TODO_FIRST_BASELINE + line * TODO_ITEM_SPACING;
+    const int box = 10;
     if (todoDone[i]) {
-      display.fillRect(12, y - 9, box, box, GxEPD_BLACK);
+      display.fillRect(12, firstY - 12, box, box, GxEPD_BLACK);
     } else {
-      display.drawRect(12, y - 9, box, box, GxEPD_BLACK);
+      display.drawRect(12, firstY - 12, box, box, GxEPD_BLACK);
     }
 
-    String text = todoText[i];
-    for (size_t j = 0; j < text.length(); ++j) {
-      if (static_cast<uint8_t>(text[j]) >= 0x80) {
-        text[j] = '?';
-      }
-    }
-    display.setCursor(26, y);
-    display.print(text);
-
+    drawWrappedUTF8(todoText[i], 34, firstY, TODO_MAX_LINES, 354);
     if (todoDone[i]) {
-      int16_t tbx, tby;
-      uint16_t tbw, tbh;
-      display.getTextBounds(text, 0, 0, &tbx, &tby, &tbw, &tbh);
-      display.drawLine(26, y - 4, 26 + tbw, y - 4, GxEPD_BLACK);
+      int16_t w = static_cast<int16_t>(
+          u8g2Fonts.getUTF8Width(todoText[i].c_str()));
+      if (w > 354) {
+        w = 354;
+      }
+      display.drawLine(34, firstY - 4, 34 + w, firstY - 4, GxEPD_BLACK);
     }
     ++line;
   }
 
   if (line == 0) {
-    display.setCursor(12, TODO_BASELINES[0]);
-    display.print("No todos - open Web UI");
+    setChineseFont();
+    u8g2Fonts.drawUTF8(12, TODO_FIRST_BASELINE, "暂无待办，请在网页添加");
   }
 }
 
-void drawQuotaPanel() {
-  display.setFont(&FreeSansBold9pt7b);
-  display.setTextColor(GxEPD_BLACK);
-  String title = "CHATGPT";
-  if (quotaPlan.length() > 0) {
-    String plan = quotaPlan;
-    plan.toUpperCase();
-    title += " ";
-    title += plan;
-  }
-  display.setCursor(QUOTA_TEXT_X, QUOTA_TITLE_Y);
-  display.print(title);
-
-  display.setFont(&FreeSans9pt7b);
+void drawBottomPanel() {
+  char buf[96];
   if (quotaH5 < 0 || quotaWk < 0) {
-    display.setCursor(QUOTA_TEXT_X, QUOTA_LINE1_Y);
-    display.print("no data");
-    display.setCursor(QUOTA_TEXT_X, QUOTA_LINE2_Y);
-    display.print("run helper");
-    return;
+    snprintf(buf, sizeof(buf), "ChatGPT 无数据，运行 helper");
+  } else {
+    char plan[16];
+    String planStr = quotaPlan;
+    planStr.toUpperCase();
+    snprintf(plan, sizeof(plan), "%s", planStr.c_str());
+    snprintf(buf, sizeof(buf), "ChatGPT %s 5h %d%% 周 %d%% 更新 %s", plan,
+             quotaH5, quotaWk, quotaUpdated.c_str());
+    if (quotaUpdatedEpoch > 0 &&
+        time(nullptr) - static_cast<time_t>(quotaUpdatedEpoch) > 6 * 3600) {
+      strncat(buf, " 已过期", sizeof(buf) - strlen(buf) - 1);
+    }
   }
 
-  char buf[32];
-  snprintf(buf, sizeof(buf), "5h %3d%% %s", quotaH5, quotaH5Reset.c_str());
-  display.setCursor(QUOTA_TEXT_X, QUOTA_LINE1_Y);
-  display.print(buf);
+  setChineseFont();
+  u8g2Fonts.drawUTF8(12, QUOTA_BASELINE, buf);
 
-  snprintf(buf, sizeof(buf), "wk %3d%% %s", quotaWk, quotaWkReset.c_str());
-  display.setCursor(QUOTA_TEXT_X, QUOTA_LINE2_Y);
-  display.print(buf);
-
-  snprintf(buf, sizeof(buf), "upd %s", quotaUpdated.c_str());
-  display.setCursor(QUOTA_TEXT_X, QUOTA_LINE3_Y);
-  display.print(buf);
-
-  if (quotaUpdatedEpoch > 0 &&
-      time(nullptr) - static_cast<time_t>(quotaUpdatedEpoch) > 6 * 3600) {
-    display.setCursor(QUOTA_TEXT_X, QUOTA_LINE4_Y);
-    display.print("stale");
-  }
-}
-
-void drawStatus() {
-  char buf[48];
+  char ipbuf[40];
   if (WiFi.status() == WL_CONNECTED) {
-    snprintf(buf, sizeof(buf), "Web UI: %s",
+    snprintf(ipbuf, sizeof(ipbuf), "Web UI: %s",
              WiFi.localIP().toString().c_str());
   } else {
-    snprintf(buf, sizeof(buf), "Wi-Fi offline - retrying");
+    snprintf(ipbuf, sizeof(ipbuf), "Wi-Fi offline");
   }
-  drawCentered(display, buf, STATUS_BASELINE, &FreeSans9pt7b);
+  drawCentered(display, ipbuf, IP_BASELINE, &FreeSans9pt7b);
 }
 
 void drawFullScreen(const struct tm& t) {
@@ -501,12 +455,8 @@ void drawFullScreen(const struct tm& t) {
     display.fillScreen(GxEPD_WHITE);
     drawTime(t);
     drawDate(t);
-    drawCalendar(t);
-    drawQuotaPanel();
-    display.drawLine(QUOTA_SEPARATOR_X, GRID_Y, QUOTA_SEPARATOR_X,
-                     GRID_Y + GRID_ROWS * CELL_H, GxEPD_BLACK);
     drawTodos();
-    drawStatus();
+    drawBottomPanel();
   } while (display.nextPage());
 
   lastMinute = t.tm_min;
@@ -527,13 +477,12 @@ void drawTimePartial(const struct tm& t) {
   lastMinute = t.tm_min;
 }
 
-void drawQuotaPartial() {
-  display.setPartialWindow(QUOTA_PARTIAL_X, QUOTA_PARTIAL_Y, QUOTA_PARTIAL_W,
-                           QUOTA_PARTIAL_H);
+void drawBottomPartial() {
+  display.setPartialWindow(0, BOTTOM_PARTIAL_Y, epd::WIDTH, BOTTOM_PARTIAL_H);
   display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
-    drawQuotaPanel();
+    drawBottomPanel();
   } while (display.nextPage());
 }
 
@@ -667,6 +616,8 @@ void setup() {
   display.init(115200, true, 50, false);
   display.setRotation(0);
   pinMode(epd::PIN_BUSY, INPUT_PULLUP);
+  u8g2Fonts.begin(display);
+  setChineseFont();
 
   loadTodos();
   loadQuota();
@@ -750,7 +701,7 @@ void loop() {
     drawFullScreen(t);
   } else if (quotaDirty && mainScreenVisible) {
     quotaDirty = false;
-    drawQuotaPartial();
+    drawBottomPartial();
   } else if (t.tm_mday != lastDay ||
              now - lastFullRefreshMs >= FULL_REFRESH_MS) {
     drawFullScreen(t);
