@@ -32,11 +32,15 @@
 
 - 保持代码简单、模块化，但避免过早引入复杂架构。
 - 第一版功能范围：时间日期/星期、简洁月历、今日待办（最多 3 项）、AI 使用情况。
-  按用户偏好，**表格月历已移除**，保留日期/星期；今日待办区扩大。
+  当前为卡片式首页：左侧时间/今日待办，右侧紧凑月历卡（无表格线），
+  底部 AI 剩余额度。
 - 墨水屏驱动类固定为 `GxEPD2_420_GDEY042T81`（GxEPD2 1.6.9），不得误用 `GxEPD2_420`
   （后者对应 GDEW042T2 / UC8176）。
 - 中文字体依赖：`olikraus/U8g2_for_Adafruit_GFX@1.8.0` + `olikraus/U8g2@2.36.18`，
-  字体 `u8g2_font_wqy16_t_gb2312`（GB2312 常用字）。
+  字体 `u8g2_font_wqy16_t_gb2312`（GB2312 常用字）；大号时间用
+  `u8g2_font_fub42_tn`。
+- 界面绘制集中在 `include/ui_layout.h` / `src/ui_layout.cpp`；`main.cpp`
+  只负责数据、网络和刷新调度。
 - 墨水屏 GPIO 映射以 `include/epd_config.h` 为准：SCK=4、MOSI=6、CS=7、DC=3、RST=2、BUSY=10
   （按 V1.5 驱动板卖家的 ESP32C3 接线图）。
   修改引脚必须同步更新 `docs/progress.md` 的接线表。
@@ -50,8 +54,8 @@
   `chatgpt.com/backend-api/wham/usage` 接口，由 `tools/codex_quota_push.py`
   读取 `~/.codex/auth.json` 并推送到 ESP32 `/quota`。token 只留在电脑上，
   禁止提交 `~/.codex/auth.json`，禁止把 token 写入固件或仓库。接口非官方、
-  可能变化；失败时显示 stale/no data，禁止编造额度。当前显示 ChatGPT Plus
-  5 小时/周剩余百分比。
+  可能变化；失败时显示 stale/no data，禁止编造额度。当前 AI 剩余卡显示
+  ChatGPT Plus 5 小时/周**剩余**百分比（不是已用百分比），不使用示例值。
 - 墨水屏低频刷新，避免残影；**不要为了显示秒数而整屏刷新**。
 - AI 使用数据必须来自真实、可靠的数据源，禁止编造；区分订阅额度与 API Token 用量。
 - 优先复用已有工具链与库，不擅自安装不必要的系统级依赖或修改全局环境。

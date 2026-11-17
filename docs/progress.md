@@ -859,6 +859,58 @@ Flash: [========  ]  83.8% (used 1098282 bytes from 1310720 bytes)
 - `include/secrets.h` 密码行曾因末尾多一个反引号导致编译失败；
   已删除该字符，未改密码内容。
 
+---
+
+## 实验 05.2：卡片式首页 UI（2026-11-17）
+
+### 1. 用户要求
+
+- 参考 400×300 卡片式参考图；
+- 顶部页头、左侧时间卡 + 今日待办、右侧月历、底部 AI 用量；
+- 细边框、留白、清晰层次；
+- 当天日期必须能看见；
+- AI 卡片改成 5 小时/周，并显示**剩余**用量。
+
+### 2. 实现
+
+- 新增 `include/ui_layout.h` / `src/ui_layout.cpp`：
+  - `UiData`：时间、日期、待办、AI 剩余、网页 IP；
+  - `UiLayout`：`drawHeader()`、`drawTimeCard()`、`drawTodoCard()`、
+    `drawCalendarCard()`、`drawAIUsageCard()`、`drawMainUI()`；
+- `main.cpp` 保留 Wi-Fi/NTP/WebServer/NVS/helper，绘制改为
+  `ui.drawMainUI()` / `ui.drawTimeCardPartial()`；
+- 布局：
+  - 页头 30px，外层 1px 边框；
+  - 左列 48%：时间卡（42px `u8g2_font_fub42_tn`）+ 今日待办卡；
+  - 右列 52%：紧凑月历卡，无表格线；当天用 **黑框 + 白底 + 黑字** 高亮；
+  - 底部 AI 剩余卡：5 小时/本周两行进度条，显示真实剩余百分比；
+  - AI 卡片标题右侧显示 `ChatGPT PLUS`，不再使用示例值。
+- 当天日期最初使用黑底白字，U8g2 白字在实心黑块上不可见；
+  改为黑框/白底/黑字后修复。
+- AI 卡片初版使用 42%/68% 示例值（带 `示例` 标签）；后按用户要求
+  改为真实 5 小时/周剩余百分比，移除示例标签。
+- 时间卡每分钟局刷；AI 剩余卡在 `/quota` 推送后局刷；
+  启动/跨日/Wi-Fi 变化/每小时/待办保存全刷。
+
+### 3. 编译
+
+```text
+RAM:   [==        ]  16.6% (used 54420 bytes from 327680 bytes)
+Flash: [========  ]  84.4% (used 1106444 bytes from 1310720 bytes)
+```
+
+### 4. 测试
+
+- 新 UI 烧录成功，Wi-Fi/NTP 正常；
+- 时间卡 `_Update_Part : 400000`；
+- helper 推送后 AI 剩余卡 `_Update_Part : 400000`；
+- 当天日期黑框白底黑字显示正常；
+- AI 剩余卡显示 `5 小时 100%` / `本周 100%`
+  （当前 helper 读到剩余 100%）；
+- 用户确认卡片布局正确；AI 卡片按用户要求改为剩余百分比。
+
+**实验 05.2 完成。**
+
 下一步：
 
 1. 核对路由器 2.4 GHz Wi-Fi 密码，更新 `include/secrets.h`

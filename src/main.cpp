@@ -9,9 +9,9 @@
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold24pt7b.h>
 #include <GxEPD2_BW.h>
-#include <U8g2_for_Adafruit_GFX.h>
 
 #include "epd_config.h"
+#include "ui_layout.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -42,28 +42,10 @@ constexpr uint32_t FULL_REFRESH_MS = 3600000UL;  // 1 hour
 constexpr int kMaxTodos = 3;
 constexpr size_t kMaxTodoChars = 40;
 
-// Layout: large time, Chinese date, large todo area, compact quota/IP footer.
-constexpr int16_t TIME_BASELINE = 52;
-constexpr int16_t DATE_BASELINE = 92;
-constexpr int16_t TODOS_TITLE_BASELINE = 120;
-constexpr int16_t TODO_FIRST_BASELINE = 148;
-constexpr int16_t TODO_ITEM_SPACING = 40;
-constexpr int16_t TODO_LINE_HEIGHT = 18;
-constexpr int16_t TODO_MAX_LINES = 2;
-constexpr int16_t QUOTA_BASELINE = 274;
-constexpr int16_t IP_BASELINE = 292;
-constexpr int16_t TIME_PARTIAL_Y = 16;
-constexpr int16_t TIME_PARTIAL_H = 40;
-constexpr int16_t BOTTOM_PARTIAL_Y = 256;
-constexpr int16_t BOTTOM_PARTIAL_H = 40;
-
-const char* const WEEKDAY_CN[] = {"星期日", "星期一", "星期二", "星期三",
-                                  "星期四", "星期五", "星期六"};
-
 GxEPD2_BW<epd::Driver, epd::HEIGHT> display(
     epd::Driver(epd::PIN_CS, epd::PIN_DC, epd::PIN_RST, epd::PIN_BUSY));
 
-U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
+UiLayout ui(display);
 
 WebServer server(80);
 String todoText[kMaxTodos];
@@ -99,63 +81,6 @@ void drawCentered(Adafruit_GFX& gfx, const char* text, int16_t baseline,
   gfx.getTextBounds(text, 0, 0, &tbx, &tby, &tbw, &tbh);
   gfx.setCursor((gfx.width() - tbw) / 2 - tbx, baseline);
   gfx.print(text);
-}
-
-void setChineseFont() {
-  u8g2Fonts.setFont(u8g2_font_wqy16_t_gb2312);
-  u8g2Fonts.setFontMode(1);  // transparent background
-  u8g2Fonts.setFontDirection(0);
-  u8g2Fonts.setForegroundColor(GxEPD_BLACK);
-  u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
-}
-
-void drawCenteredUTF8(const char* text, int16_t baseline) {
-  setChineseFont();
-  const int16_t w = static_cast<int16_t>(u8g2Fonts.getUTF8Width(text));
-  u8g2Fonts.drawUTF8((epd::WIDTH - w) / 2, baseline, text);
-}
-
-void drawWrappedUTF8(const String& text, int16_t x, int16_t firstBaseline,
-                     int maxLines, int16_t maxWidth) {
-  setChineseFont();
-  String line;
-  int lineNo = 0;
-  int16_t y = firstBaseline;
-
-  for (size_t i = 0; i < text.length();) {
-    const uint8_t c = text[i];
-    size_t len = 1;
-    if ((c & 0xE0) == 0xC0) {
-      len = 2;
-    } else if ((c & 0xF0) == 0xE0) {
-      len = 3;
-    } else if ((c & 0xF8) == 0xF0) {
-      len = 4;
-    }
-    if (i + len > text.length()) {
-      len = text.length() - i;
-    }
-
-    String next = line;
-    next += text.substring(i, i + len);
-    if (line.length() > 0 &&
-        u8g2Fonts.getUTF8Width(next.c_str()) > maxWidth) {
-      u8g2Fonts.drawUTF8(x, y, line.c_str());
-      line = text.substring(i, i + len);
-      y += TODO_LINE_HEIGHT;
-      ++lineNo;
-      if (lineNo >= maxLines) {
-        return;
-      }
-    } else {
-      line = next;
-    }
-    i += len;
-  }
-
-  if (line.length() > 0 && lineNo < maxLines) {
-    u8g2Fonts.drawUTF8(x, y, line.c_str());
-  }
 }
 
 String truncateUtf8(const String& input, size_t maxChars) {
@@ -372,93 +297,48 @@ void startWebServer() {
   Serial.println("Quota endpoint: POST /quota");
 }
 
-void drawTime(const struct tm& t) {
-  char buf[8];
-  snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
-  drawCentered(display, buf, TIME_BASELINE, &FreeSansBold24pt7b);
-}
+UiData makeUiData(const struct tm& t) {
+  UiData data;
+  data.hour = t.tm_hour;
+  data.minute = t.tm_min;
+  data.year = t.tm_year + 1900;
+  data.month = t.tm_mon + 1;
+  data.day = t.tm_mday;
+  data.weekday = t.tm_wday;
 
-void drawDate(const struct tm& t) {
-  char buf[64];
-  snprintf(buf, sizeof(buf), "%04d年%02d月%02d日 %s", t.tm_year + 1900,
-           t.tm_mon + 1, t.tm_mday, WEEKDAY_CN[t.tm_wday]);
-  drawCenteredUTF8(buf, DATE_BASELINE);
-}
-
-void drawTodos() {
-  setChineseFont();
-  u8g2Fonts.drawUTF8(12, TODOS_TITLE_BASELINE, "今日待办");
-
-  int line = 0;
+  bool anyTodo = false;
   for (int i = 0; i < kMaxTodos; ++i) {
-    if (todoText[i].length() == 0) continue;
-    const int16_t firstY = TODO_FIRST_BASELINE + line * TODO_ITEM_SPACING;
-    const int box = 10;
-    if (todoDone[i]) {
-      display.fillRect(12, firstY - 12, box, box, GxEPD_BLACK);
-    } else {
-      display.drawRect(12, firstY - 12, box, box, GxEPD_BLACK);
-    }
-
-    drawWrappedUTF8(todoText[i], 34, firstY, TODO_MAX_LINES, 354);
-    if (todoDone[i]) {
-      int16_t w = static_cast<int16_t>(
-          u8g2Fonts.getUTF8Width(todoText[i].c_str()));
-      if (w > 354) {
-        w = 354;
-      }
-      display.drawLine(34, firstY - 4, 34 + w, firstY - 4, GxEPD_BLACK);
-    }
-    ++line;
-  }
-
-  if (line == 0) {
-    setChineseFont();
-    u8g2Fonts.drawUTF8(12, TODO_FIRST_BASELINE, "暂无待办，请在网页添加");
-  }
-}
-
-void drawBottomPanel() {
-  char buf[96];
-  if (quotaH5 < 0 || quotaWk < 0) {
-    snprintf(buf, sizeof(buf), "ChatGPT 无数据，运行 helper");
-  } else {
-    char plan[16];
-    String planStr = quotaPlan;
-    planStr.toUpperCase();
-    snprintf(plan, sizeof(plan), "%s", planStr.c_str());
-    snprintf(buf, sizeof(buf), "ChatGPT %s 5h %d%% 周 %d%% 更新 %s", plan,
-             quotaH5, quotaWk, quotaUpdated.c_str());
-    if (quotaUpdatedEpoch > 0 &&
-        time(nullptr) - static_cast<time_t>(quotaUpdatedEpoch) > 6 * 3600) {
-      strncat(buf, " 已过期", sizeof(buf) - strlen(buf) - 1);
+    data.todos[i].text = todoText[i];
+    data.todos[i].done = todoDone[i];
+    if (todoText[i].length() > 0) {
+      anyTodo = true;
     }
   }
-
-  setChineseFont();
-  u8g2Fonts.drawUTF8(12, QUOTA_BASELINE, buf);
-
-  char ipbuf[40];
-  if (WiFi.status() == WL_CONNECTED) {
-    snprintf(ipbuf, sizeof(ipbuf), "Web UI: %s",
-             WiFi.localIP().toString().c_str());
-  } else {
-    snprintf(ipbuf, sizeof(ipbuf), "Wi-Fi offline");
+  if (!anyTodo) {
+    data.todos[0].text = "学习 ROS2";
+    data.todos[1].text = "调试墨水屏";
+    data.todos[2].text = "整理项目文档";
   }
-  drawCentered(display, ipbuf, IP_BASELINE, &FreeSans9pt7b);
+
+  data.hasQuota = (quotaH5 >= 0 && quotaWk >= 0);
+  // The quota helper already reports remaining percentages.
+  data.h5Percent = data.hasQuota ? quotaH5 : 0;
+  data.weekPercent = data.hasQuota ? quotaWk : 0;
+
+  String plan = quotaPlan;
+  plan.toUpperCase();
+  data.aiSource =
+      data.hasQuota
+          ? (plan.length() > 0 ? "ChatGPT " + plan : String("ChatGPT"))
+          : String("ChatGPT");
+
+  data.wifiOk = (WiFi.status() == WL_CONNECTED);
+  data.ip = data.wifiOk ? WiFi.localIP().toString() : String();
+  return data;
 }
 
 void drawFullScreen(const struct tm& t) {
-  display.setFullWindow();
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    drawTime(t);
-    drawDate(t);
-    drawTodos();
-    drawBottomPanel();
-  } while (display.nextPage());
-
+  ui.drawMainUI(makeUiData(t));
   lastMinute = t.tm_min;
   lastDay = t.tm_mday;
   lastFullRefreshMs = millis();
@@ -467,23 +347,11 @@ void drawFullScreen(const struct tm& t) {
 }
 
 void drawTimePartial(const struct tm& t) {
-  display.setPartialWindow(0, TIME_PARTIAL_Y, epd::WIDTH, TIME_PARTIAL_H);
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    drawTime(t);
-  } while (display.nextPage());
-
+  if (!mainScreenVisible) {
+    return;
+  }
+  ui.drawTimeCardPartial(makeUiData(t));
   lastMinute = t.tm_min;
-}
-
-void drawBottomPartial() {
-  display.setPartialWindow(0, BOTTOM_PARTIAL_Y, epd::WIDTH, BOTTOM_PARTIAL_H);
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    drawBottomPanel();
-  } while (display.nextPage());
 }
 
 const char* wifiStatusName(wl_status_t status) {
@@ -616,8 +484,7 @@ void setup() {
   display.init(115200, true, 50, false);
   display.setRotation(0);
   pinMode(epd::PIN_BUSY, INPUT_PULLUP);
-  u8g2Fonts.begin(display);
-  setChineseFont();
+  ui.begin();
 
   loadTodos();
   loadQuota();
@@ -701,7 +568,7 @@ void loop() {
     drawFullScreen(t);
   } else if (quotaDirty && mainScreenVisible) {
     quotaDirty = false;
-    drawBottomPartial();
+    ui.drawAIUsageCardPartial(makeUiData(t));
   } else if (t.tm_mday != lastDay ||
              now - lastFullRefreshMs >= FULL_REFRESH_MS) {
     drawFullScreen(t);
