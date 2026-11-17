@@ -34,7 +34,8 @@
 - 第一版功能范围：时间日期/星期、简洁月历、今日待办（最多 3 项）、AI 使用情况。
 - 墨水屏驱动类固定为 `GxEPD2_420_GDEY042T81`（GxEPD2 1.6.9），不得误用 `GxEPD2_420`
   （后者对应 GDEW042T2 / UC8176）。
-- 墨水屏 GPIO 映射以 `include/epd_config.h` 为准：SCK=4、MOSI=6、CS=7、DC=3、RST=10、BUSY=0。
+- 墨水屏 GPIO 映射以 `include/epd_config.h` 为准：SCK=4、MOSI=6、CS=7、DC=3、RST=2、BUSY=10
+  （按 V1.5 驱动板卖家的 ESP32C3 接线图）。
   修改引脚必须同步更新 `docs/progress.md` 的接线表。
 - 墨水屏低频刷新，避免残影；**不要为了显示秒数而整屏刷新**。
 - AI 使用数据必须来自真实、可靠的数据源，禁止编造；区分订阅额度与 API Token 用量。

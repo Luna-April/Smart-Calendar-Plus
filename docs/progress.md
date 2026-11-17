@@ -301,8 +301,9 @@ GDEY042T81 规格书 §12（第 31 页）的参考电路：
 
 ### 2. GPIO 接线表
 
-ESP32-C3 SuperMini 可用 GPIO：0–10、20、21。以下方案避开 strapping 脚（GPIO2/8/9）、
-USB（18/19）与 UART0（20/21），并使用 ESP32-C3 默认 FSPI 的 SCK/MOSI：
+ESP32-C3 SuperMini 可用 GPIO：0–10、20、21。以下方案避开 USB（18/19）与 UART0（20/21），
+并使用 ESP32-C3 默认 FSPI 的 SCK/MOSI。注意：V1.5 卖家接线图使用 GPIO2 作为 RST；
+GPIO2 是 strapping 脚，上电时不得被驱动板拉低，否则会影响启动模式。
 
 | 驱动板引脚 | ESP32-C3 SuperMini | 说明 |
 | --- | --- | --- |
@@ -310,16 +311,16 @@ USB（18/19）与 UART0（20/21），并使用 ESP32-C3 默认 FSPI 的 SCK/MOSI
 | 3V3 | 3V3 | **仅 3.3 V**，禁止 5 V |
 | SCK | GPIO4 | FSPI SCK |
 | SDA | GPIO6 | FSPI MOSI |
-| RST | GPIO10 | 复位，低有效 |
+| RST | GPIO2 | 复位，低有效（按 V1.5 卖家接线图） |
 | DC | GPIO3 | 数据/命令选择 |
 | CS1 | GPIO7 | 片选，低有效 |
-| BUSY | GPIO0 | 忙状态输入（高=忙） |
+| BUSY | GPIO10 | 忙状态输入（高=忙，按 V1.5 卖家接线图） |
 | CS2 | 不接 | 单屏不用 |
 
 补充：
 
 - GPIO5 留给 SPI MISO（本屏不使用，但 `SPI.begin()` 传 -1 会在 C3 上打印错误，故保留）；
-- GPIO1、GPIO2、GPIO8、GPIO9 不使用；GPIO2/8/9 为 strapping，GPIO8 还接板载 LED；
+- GPIO1、GPIO8、GPIO9 不使用；GPIO2 用于 RST（strapping，上电时不得拉低）；GPIO8 还接板载 LED；
 - 接线前先断电，FPC 插好后锁紧，**禁止带电插拔 FPC**。
 
 ### 3. GxEPD2 驱动选型
@@ -397,3 +398,178 @@ Flash: [==        ]  19.6% (used 257104 bytes from 1310720 bytes)
 2. 核对无误后，给出最终接线确认单；
 3. 用户确认接线安全后，再烧录并首次点亮；
 4. 首次点亮只做一次全刷，观察 Busy 时序、电流与显示效果，记录结果。
+
+---
+
+## 实验 02 实际运行记录（2026-11-17）
+
+### 1. 硬件状态（用户确认）
+
+- 驱动板供电：3.3 V（用户测得板端约 2.88 V，ESP32 端 3.3 V；压降原因未定性，
+  可能是板载二极管，也可能是接触电阻）；
+- RESE 开关：已置于 **3 Ω**，未使用 0.47 Ω；
+- FPC：用户确认金手指朝下，已多次重新插拔并换过面包板；
+- BUSY 杜邦线：用户用万用表测过，线本身导通；
+- 面板：GDEY042T81 / 背标 `042BN-T81-D2`，SSD1683，400×300。
+
+### 2. 固件
+
+- 驱动类：`GxEPD2_420_GDEY042T81`（GxEPD2 1.6.9）；
+- 诊断固件在 `setup()` 中：
+  1. 用内部上拉/下拉探测 BUSY，判断是否浮空；
+  2. 显式 `SPI.begin(4, 5, 6, 7)`；
+  3. `display.init(115200, true, 50, false)`；
+  4. 执行一次 `clearScreen(0xFF)`，等待 3 s；
+  5. 写入全屏 canvas，调用 `refresh(false)`；
+  6. 等待并采样 BUSY；
+  7. 最后给 BUSY 保持内部上拉，验证开漏 BUSY 的可能性。
+
+### 3. 实测日志（2026-11-17 18:33–18:36）
+
+未加上拉时：
+
+```text
+BUSY probe [quiescent]: pull-up=1 pull-down=0 -> floating / high-Z
+BUSY probe [after init]: pull-up=1 pull-down=0 -> floating / high-Z
+_Update_Full : 3
+BUSY probe [after clear wait]: pull-up=1 pull-down=0 -> floating / high-Z
+_Update_Full : 1
+BUSY probe [after image refresh]: pull-up=1 pull-down=0 -> floating / high-Z
+```
+
+加上内部上拉后：
+
+```text
+Busy Timeout!
+_Update_Full : 10001034
+Busy Timeout!
+_Update_Full : 10001028
+BUSY 始终保持 1
+```
+
+屏幕始终全白，没有任何图像。
+
+### 4. 结论
+
+- BUSY 在初始化、清屏、写图、刷新后都未被面板驱动；加上拉后只会 10 秒超时。
+- 这排除了“驱动板缺少 BUSY 上拉”这一可能。
+- 也排除了“驱动类选错导致 BUSY 浮空”：驱动类错误不会让面板侧完全不驱动 BUSY。
+- 当前证据指向硬件侧：FPC 未真正接触、驱动板 FPC 座/走线问题、FPC 引脚定义不兼容，
+  或面板控制器已损坏。
+- 未验证：驱动板是否有 BS1/3W-4W 跳线、FPC 座是 top-contact 还是 bottom-contact、
+  面板 VDD/VDDIO 是否真正到达、面板是否损坏。
+
+### 5. 下一步
+
+1. 取得驱动板正反面与 FPC 座特写照片，确认座子触点方向、插入深度、丝印与跳线；
+2. 确认是否存在 `BS1` / `3W-4W` / `SPI` 第二开关，若有必须置于 4-wire；
+3. 若板上有 VDD/VDDIO/GND 测试点，测量面板供电是否到达；
+4. 用已知良好的驱动板或面板做交叉验证；
+5. 在完成上述确认前，不再反复复位；保持 RESE 3 Ω，禁止 0.47 Ω。
+
+### 6. 规格书核对（2026-11-17）
+
+已获取 GDEY042T81 规格书并确认：
+
+- FPC Pin 9 = BUSY，**高 = 忙**（Note 5-4）；
+- Pin 15 VDDIO 必须与 Pin 16 VCI 一起接 3.3 V；
+- Pin 17 = VSS，接地；
+- Pin 8 BS1：**低 = 4-wire SPI**，高 = 3-wire SPI；
+- Pin 12 = CS#，Pin 13/14 = SCL/SDA，Pin 10/11 = RES#/D/C#；
+- Mechanical Drawing 中 FPC 的 “Connect” 面为金手指面，另一面为 Stiffener。
+
+下一步需核对 V1.5 驱动板 FPC 座是否按此定义走线。若 BUSY、VDDIO/VCI、VSS 任一错位，
+面板不会上电或 BUSY 不会响应，与当前“全白 + BUSY 浮空”的现象一致。
+
+### 7. 商品详情核对（2026-11-17）
+
+卖家商品详情中的 ESP32C3 接线图为：
+
+```
+3.3V --- 3V3
+GND  --- GND
+GPIO2  --- RST
+GPIO3  --- DC
+GPIO4  --- SCK
+GPIO6  --- SDA
+GPIO7  --- CS
+GPIO10 --- BUSY
+```
+
+当前 `include/epd_config.h` 为：
+
+```
+PIN_RST  = 10
+PIN_BUSY = 0
+```
+
+**RST 与 BUSY 刚好互换。** 如果实际按卖家图接线，则固件把 GPIO10 当 RST 驱动，
+而真正的 BUSY 在 GPIO10；固件读取的 GPIO0 没有连接 BUSY，必然浮空。
+这与实测“BUSY 浮空、全白、10 秒超时”完全一致。
+
+商品详情同时说明：
+
+- 本板 FPC 为双向，排线金属面朝上/朝下均可，但必须插到底；
+- CS2 为双芯片第二条片选，单芯片不接；
+- 卖家只承诺“24P/26P/34P 通用”，是否支持 GDEY042T81 仍需核对引脚定义。
+
+下一步：用万用表确认驱动板 RST、BUSY 两根线实际接到 ESP32 的哪两个 GPIO。
+若为 GPIO2/GPIO10，则修改固件引脚定义，无需重新接线。
+
+**2026-11-17 20:14 实测结果**：用户确认按卖家图接线（RST=GPIO2、BUSY=GPIO10），
+固件已改为 `PIN_RST=2`、`PIN_BUSY=10` 并烧录。复位后 BUSY 仍然浮空：
+
+```text
+BUSY probe [quiescent]: pull-up=1 pull-down=0 -> floating / high-Z
+BUSY probe [after init]: pull-up=1 pull-down=0 -> floating / high-Z
+Busy Timeout!
+_Update_Full : 10001042
+Busy Timeout!
+_Update_Full : 10000036
+```
+
+结论：RST/BUSY 引脚映射错误确实存在，修正它是必要的，但仍不是全部原因。
+剩余怀疑集中在：
+
+1. FPC 金手指仍未真正接触（需新特写确认是否插到底）；
+2. V1.5 板的 FPC 座引脚定义与 GDEY042T81 不一致（BUSY / VDDIO / VCI / VSS 错位）；
+3. 面板控制器已损坏。
+
+**2026-11-17 20:26 复测结果：面板已响应**
+
+用户发现 ESP32 与驱动板之间的接线左右接反，重新接线后：
+
+```text
+BUSY probe [quiescent]: pull-up=0 pull-down=0 -> driven LOW
+BUSY probe [after init]: pull-up=0 pull-down=0 -> driven LOW
+_Update_Full : 1700999
+BUSY probe [after clear wait]: pull-up=0 pull-down=0 -> driven LOW
+BUSY probe [after image write]: pull-up=0 pull-down=0 -> driven LOW
+_Update_Full : 1699000
+BUSY probe [after image refresh]: pull-up=0 pull-down=0 -> driven LOW
+BUSY during wait: sawHIGH=0 sawLOW=1 final=0
+```
+
+结论：
+
+- BUSY 已被面板驱动为低，不再是高阻；
+- 两次全刷各约 1.7 秒，无 `Busy Timeout!`；
+- 面板已响应，屏幕点亮。
+
+根因是 ESP32 与驱动板之间的接线左右接反（SDA/SCK 等信号错位），
+以及此前固件 RST/BUSY 引脚与卖家接线图不一致。两处均已修正。
+
+2026-11-17 用户确认屏幕显示内容正常：边框 + **Hello World** + **Smart Calendar**
++ **Experiment 02 - DIAG** + **400 x 300, black / white**。**实验 02 完成。**
+
+**2026-11-17 20:32 固件整理并复测**：移除 BUSY 探测、clearScreen 等待和诊断采样，
+改为 paged full-window Hello World，刷新后 `hibernate()`。串口：
+
+```text
+_Update_Full : 1701000
+_Update_Full : 1701000
+Full refresh complete; panel hibernated.
+Experiment 02 done. No further refresh.
+```
+
+用户确认显示正常（文本改为 **Experiment 02 - DONE**）。实验 02 固件收尾完成。

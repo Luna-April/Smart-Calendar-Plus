@@ -3,9 +3,9 @@
 一款基于 **ESP32-C3** 与 **4.2 英寸黑白电子墨水屏** 的低成本桌面台历。
 设备通过 Wi-Fi 校时与获取信息，USB 持续供电，界面追求极简、低频刷新。
 
-> 状态：**实验 02 准备阶段**——资料核对与 Hello World 固件编译已完成；
-> 墨水屏**尚未接线、尚未上电、新固件尚未烧录**。
-> 实验 01（ESP32-C3 主控验证）已完成。
+> 状态：**实验 02 首次点亮成功（2026-11-17）**——4.2" 墨水屏已正常刷新。
+> 根因是 ESP32 与驱动板接线左右接反，以及 RST/BUSY 引脚定义与卖家接线图不一致；
+> 两处均已修正。实验 01（ESP32-C3 主控验证）已完成。
 
 本项目与 `/home/hy/ai-desktop-robot/`（AI 桌宠机器人）完全独立，后者不属于本仓库范围。
 
@@ -67,7 +67,7 @@ PlatformIO 没有 "ESP32-C3 SuperMini" 官方板卡。`lolin_c3_mini` 与 SuperM
 ```text
 Smart-Calendar/
 ├── platformio.ini          # PlatformIO 工程配置
-├── src/main.cpp            # 实验 02 Hello World 固件（仅编译）
+├── src/main.cpp            # 实验 02 Hello World 固件（已烧录）
 ├── include/epd_config.h    # 墨水屏引脚、尺寸与驱动类
 ├── include/                # 其他项目头文件（预留）
 ├── lib/                    # 项目私有库（预留）
@@ -94,17 +94,20 @@ cd /home/hy/Smart-Calendar
 .venv/bin/pio device monitor --port /dev/ttyACM1 --baud 115200
 ```
 
-固件行为（实验 02，当前仅编译、未烧录）：
+固件行为（实验 02 Hello World，已烧录）：
 
 1. 串口打印引脚映射与安全提示；
 2. 显式配置 ESP32-C3 的 SPI 引脚（不依赖板卡默认值）；
-3. 全屏绘制 “Hello World” 等信息并执行一次全刷；
-4. 调用 `display.hibernate()`，之后只输出串口心跳，不再刷新屏幕。
+3. 全屏绘制 Hello World、Smart Calendar 与实验信息；
+4. 执行一次完整刷新，然后调用 `display.hibernate()`；
+5. 之后只输出 10 秒串口心跳，不再刷新屏幕。
 
-## 实验 02 接线方案（尚未接线）
+实验记录见 [`docs/progress.md`](docs/progress.md) 的“实验 02 实际运行记录”。
 
-> ⚠️ 仅供核对。当前**不要接线、不要上电**。RESE 必须置于 **3 Ω**，驱动板只能接 **3.3 V**。
-> 完整的安全核对清单见 [`docs/progress.md`](docs/progress.md) 实验 02 第 5 节。
+## 实验 02 接线方案（已验证）
+
+> ✅ 该接线已于 2026-11-17 验证点亮。RESE 必须置于 **3 Ω**，驱动板只能接 **3.3 V**。
+> 完整的安全核对清单与实测记录见 [`docs/progress.md`](docs/progress.md) 实验 02。
 
 | 驱动板引脚 | ESP32-C3 SuperMini | 说明 |
 | --- | --- | --- |
@@ -112,11 +115,22 @@ cd /home/hy/Smart-Calendar
 | 3V3 | 3V3 | 仅 3.3 V，禁止 5 V |
 | SCK | GPIO4 | FSPI SCK |
 | SDA | GPIO6 | FSPI MOSI |
-| RST | GPIO10 | 复位，低有效 |
+| RST | GPIO2 | 复位，低有效（按 V1.5 卖家接线图） |
 | DC | GPIO3 | 数据/命令选择 |
 | CS1 | GPIO7 | 片选 |
-| BUSY | GPIO0 | 忙状态输入 |
+| BUSY | GPIO10 | 忙状态输入（按 V1.5 卖家接线图） |
 | CS2 | 不接 | 单屏不用 |
+
+## 实验 02 结果摘要
+
+- 日期：2026-11-17
+- 结果：4.2" GDEY042T81（SSD1683）首次点亮成功，显示 Hello World 诊断图
+- 驱动：GxEPD2 1.6.9，`GxEPD2_420_GDEY042T81`
+- 接线：SCK=GPIO4、SDA=GPIO6、CS1=GPIO7、DC=GPIO3、RST=GPIO2、BUSY=GPIO10、3V3、GND
+- RESE：3 Ω（禁止 0.47 Ω）
+- 关键日志：BUSY 被面板驱动为低；两次全刷约 1.7 s，无 `Busy Timeout!`
+- 根因：ESP32 与驱动板接线左右接反；早期固件 RST/BUSY 与卖家接线图不一致。两处均已修正。
+- 详细记录见 [`docs/progress.md`](docs/progress.md) 实验 02。
 
 ## 实验 01 结果摘要
 
@@ -131,7 +145,7 @@ cd /home/hy/Smart-Calendar
 
 | 实验 | 内容 |
 | --- | --- |
-| 02 | 核实屏幕/驱动板电气兼容，接线并点亮墨水屏，显示 Hello World |
+| 02 | ✅ 已完成（2026-11-17）：核实兼容、接线并点亮墨水屏，显示 Hello World |
 | 03 | Wi-Fi 联网、NTP 校时、日期与日历显示 |
 | 04 | 极简信息布局，显示今日待办（最多 3 项） |
 | 05 | 研究并接入 AI 工具使用额度数据 |
