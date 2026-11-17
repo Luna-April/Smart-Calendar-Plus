@@ -3,9 +3,10 @@
 一款基于 **ESP32-C3** 与 **4.2 英寸黑白电子墨水屏** 的低成本桌面台历。
 设备通过 Wi-Fi 校时与获取信息，USB 持续供电，界面追求极简、低频刷新。
 
-> 状态：**实验 02 首次点亮成功（2026-11-17）**——4.2" 墨水屏已正常刷新。
-> 根因是 ESP32 与驱动板接线左右接反，以及 RST/BUSY 引脚定义与卖家接线图不一致；
-> 两处均已修正。实验 01（ESP32-C3 主控验证）已完成。
+> 状态：**实验 03 已完成（2026-11-17）**——家庭 Wi-Fi 连接、NTP 校时、
+> 日期/星期与月历显示均已验证，分钟局刷正常。
+> ESP32-C3 的 Wi-Fi TX 固定为 **11 dBm**（19.5 dBm 会导致 WPA2 认证失败）。
+> 实验 02 已首次点亮。实验 01 已完成。
 
 本项目与 `/home/hy/ai-desktop-robot/`（AI 桌宠机器人）完全独立，后者不属于本仓库范围。
 
@@ -67,8 +68,9 @@ PlatformIO 没有 "ESP32-C3 SuperMini" 官方板卡。`lolin_c3_mini` 与 SuperM
 ```text
 Smart-Calendar/
 ├── platformio.ini          # PlatformIO 工程配置
-├── src/main.cpp            # 实验 02 Hello World 固件（已烧录）
+├── src/main.cpp            # 实验 03 Wi-Fi/NTP/日历固件（已烧录）
 ├── include/epd_config.h    # 墨水屏引脚、尺寸与驱动类
+├── include/secrets.example.h # Wi-Fi 凭据模板（secrets.h 不提交）
 ├── include/                # 其他项目头文件（预留）
 ├── lib/                    # 项目私有库（预留）
 ├── docs/progress.md        # 实验记录与进度
@@ -94,15 +96,15 @@ cd /home/hy/Smart-Calendar
 .venv/bin/pio device monitor --port /dev/ttyACM1 --baud 115200
 ```
 
-固件行为（实验 02 Hello World，已烧录）：
+固件行为（实验 03，已烧录）：
 
-1. 串口打印引脚映射与安全提示；
-2. 显式配置 ESP32-C3 的 SPI 引脚（不依赖板卡默认值）；
-3. 全屏绘制 Hello World、Smart Calendar 与实验信息；
-4. 执行一次完整刷新，然后调用 `display.hibernate()`；
-5. 之后只输出 10 秒串口心跳，不再刷新屏幕。
+1. 连接 2.4 GHz Wi-Fi（凭据在 `include/secrets.h`，TX 固定 11 dBm）；
+2. NTP 校时，默认时区 `CST-8`；
+3. 顶部显示时间，第二行日期/星期，中部当前月日历，底部 Wi-Fi/NTP 状态；
+4. 启动、跨日、Wi-Fi 状态变化、每小时全刷；每分钟只局刷时间区域；
+5. 串口输出连接状态与 30 秒心跳。
 
-实验记录见 [`docs/progress.md`](docs/progress.md) 的“实验 02 实际运行记录”。
+实验记录见 [`docs/progress.md`](docs/progress.md) 的“实验 03：Wi-Fi / NTP / 日历”。
 
 ## 实验 02 接线方案（已验证）
 
@@ -120,6 +122,48 @@ cd /home/hy/Smart-Calendar
 | CS1 | GPIO7 | 片选 |
 | BUSY | GPIO10 | 忙状态输入（按 V1.5 卖家接线图） |
 | CS2 | 不接 | 单屏不用 |
+
+## 实验 03：Wi-Fi / NTP / 日历
+
+### Wi-Fi 配置（密码不提交）
+
+```bash
+cp include/secrets.example.h include/secrets.h
+```
+
+编辑 `include/secrets.h`，填入 **2.4 GHz** Wi-Fi 的 SSID 和密码。该文件已被 `.gitignore`
+排除，不要提交，也不要把密码发到聊天里。
+
+默认时区为 `CST-8`（中国标准时间，UTC+8）；如需修改，编辑 `src/main.cpp` 的 `TIMEZONE`。
+
+### 显示与刷新
+
+- 顶部：`HH:MM` 大号时间；
+- 第二行：`YYYY-MM-DD  Weekday`；
+- 中部：当前月日历（周一开始），今日高亮；
+- 底部：Wi-Fi / NTP 状态；
+- 启动、跨日、Wi-Fi 状态变化、每小时做一次全刷；每分钟只对时间区域做局刷。
+
+当前版本使用英文月份/星期名，因为 Adafruit GFX 默认字体只含 ASCII；中文字体后续再加。
+
+### 测试
+
+填写 `include/secrets.h` 后：
+
+```bash
+.venv/bin/pio run -t upload --upload-port /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_AC:A2:6A:8E:29:80-if00
+.venv/bin/pio device monitor --port /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_AC:A2:6A:8E:29:80-if00 --baud 115200
+```
+
+ESP32-C3 只支持 **2.4 GHz Wi-Fi**；5 GHz-only 网络无法连接。
+
+### 实验结果（2026-11-17）
+
+- 家庭 Wi-Fi 2.4 GHz 连接成功，NTP 同步；
+- 屏幕显示时间、日期/星期、当前月日历，今日高亮；
+- 每分钟时间区域局刷约 0.4 s；启动、跨日、Wi-Fi 状态变化和每小时做一次全刷；
+- **重要硬件约束**：本机 ESP32-C3 在 19.5 dBm 最大 TX 下 WPA2 认证失败
+  （disconnect reason 2/202），固定使用 **11 dBm**（`WIFI_POWER_11dBm`）。
 
 ## 实验 02 结果摘要
 
@@ -146,7 +190,7 @@ cd /home/hy/Smart-Calendar
 | 实验 | 内容 |
 | --- | --- |
 | 02 | ✅ 已完成（2026-11-17）：核实兼容、接线并点亮墨水屏，显示 Hello World |
-| 03 | Wi-Fi 联网、NTP 校时、日期与日历显示 |
+| 03 | ✅ 已完成（2026-11-17）：Wi-Fi 联网、NTP 校时、日期与日历显示 |
 | 04 | 极简信息布局，显示今日待办（最多 3 项） |
 | 05 | 研究并接入 AI 工具使用额度数据 |
 | 06 | 刷新策略、异常恢复、长期运行稳定性 |

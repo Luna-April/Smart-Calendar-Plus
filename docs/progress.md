@@ -573,3 +573,128 @@ Experiment 02 done. No further refresh.
 ```
 
 用户确认显示正常（文本改为 **Experiment 02 - DONE**）。实验 02 固件收尾完成。
+
+---
+
+## 实验 03：Wi-Fi / NTP / 日历（2026-11-17）
+
+### 1. 目标
+
+- ESP32-C3 连接 2.4 GHz Wi-Fi；
+- 通过 NTP 获取本地时间（默认 `CST-8`，UTC+8）；
+- 显示时间、日期、星期和当前月日历；
+- 保持低频刷新，避免残影。
+
+### 2. 设计决策
+
+- **Wi-Fi 凭据**放在 `include/secrets.h`，该文件由 `.gitignore` 排除；
+  仓库只提交模板 `include/secrets.example.h`，不提交真实 SSID/密码。
+- **时区**：`CST-8`（中国标准时间）。NTP 服务器：`ntp.aliyun.com`、
+  `cn.pool.ntp.org`、`pool.ntp.org`。
+- **显示布局**：
+  - 顶部大号 `HH:MM`；
+  - 第二行 `YYYY-MM-DD  Weekday`；
+  - 中部当前月日历，周一开始，今日黑底白字高亮；
+  - 底部 Wi-Fi / NTP 状态。
+- **刷新策略**：
+  - 启动、跨日、Wi-Fi 状态变化、每小时：全屏刷新；
+  - 每分钟：只对顶部时间区域做局刷（y=16，h=64，按 8 像素对齐）。
+  - 这样时间可精确到分钟，又不会每分钟整屏闪烁。
+- **字体**：当前使用 Adafruit GFX 的 ASCII 字体，月份/星期为英文；
+  中文字体需要额外字库，留到后续实验，避免第一版固件过大。
+- **失败处理**：Wi-Fi 连接失败每 30 秒重试；Wi-Fi 已连但 NTP 失败也每 30 秒重试；
+  屏幕显示对应错误提示。
+
+### 3. 代码与文件
+
+- `src/main.cpp`：Experiment 03 固件；
+- `include/secrets.example.h`：Wi-Fi 凭据模板（提交）；
+- `include/secrets.h`：本地真实凭据（不提交）；
+- `README.md`：补充实验 03 的 Wi-Fi 配置、布局与刷新说明。
+
+### 4. 编译结果
+
+```text
+RAM:   [=         ]  10.9% (used 35576 bytes from 327680 bytes)
+Flash: [===       ]  28.9% (used 379238 bytes from 1310720 bytes)
+[SUCCESS] Took 8.04 seconds
+```
+
+### 5. 测试状态：已完成（2026-11-17 21:24）
+
+最终结果：**11 dBm 下家庭 Wi-Fi 连接成功，NTP 同步，月历显示和分钟局刷正常。**
+完整排查过程见下。
+
+已填入真实 Wi-Fi 凭据并烧录。诊断结果：
+
+- ESP32-C3 Wi-Fi 正常：扫描到 30–38 个 2.4 GHz 网络；
+- 目标 SSID 可见：channel 3，RSSI -49 ~ -55 dBm，WPA/WPA2；
+- SSID 精确匹配，密码长度 8，无多余空格；
+- `WiFi.begin` 20 秒超时，断开原因码为 **2 (`AUTH_EXPIRE`)** 和 **202 (`AUTH_FAIL`)**；
+- 这是认证失败，最可能是 Wi-Fi 密码错误，或路由器 MAC 过滤/安全设置拒绝。
+- 用户随后确认：密码正确，且该网络为 **2.4 GHz / 5 GHz 双频合一**。
+  因此下一步重点转向路由器的双频合一、WPA 混合模式、Wi-Fi 6 only 和 MAC 过滤。
+- 用户补充：另一块 **ESP32-S3** 桌面机器人项目能正常连接同一 Wi-Fi。
+  这说明路由器和密码大概率正常，C3 的射频接收也正常（扫描到 40 个网络，
+  目标 AP RSSI -47 dBm）。C3 与 S3 的差异可能在于：
+  1. 路由器 MAC 白名单/黑名单/设备数量上限（S3 已登记，C3 未登记）；
+  2. 双频合一 + WPA/WPA2 混合模式对 C3（Wi-Fi 4 + 当前 Arduino 核心）的兼容性；
+  3. C3 在 Wi-Fi 发射瞬间的供电跌落（S3 板供电/天线条件不同）；
+  4. S3 项目使用的 Arduino-ESP32 / ESP-IDF 核心版本不同。
+
+**2026-11-17 21:10 交叉验证与整片擦除**：
+
+- 只读对比 S3 项目：同样使用 `platformio/espressif32@6.12.0`，Wi-Fi 初始化流程为
+  `WiFi.persistent(false)`、`WiFi.mode(WIFI_STA)`、`WiFi.setAutoReconnect(false)`、
+  `WiFi.setSleep(false)`、`WiFi.begin(ssid, password)`。
+- C3 补上同样配置，设置最大 TX 19.5 dBm，并执行整片 `erase` + 重刷。
+- 结果：热点和 Xiaomi 路由器仍然都在认证阶段失败（reason 2/202）；
+  C3 扫描接收正常（34 个网络，热点 -46 dBm）。
+- 结论：**代码/平台差异基本排除**。剩余怀疑集中在 C3 板的 Wi-Fi 发射、
+  天线、供电或该板个体硬件差异。
+- 下一步：换 USB 线/口并测 3.3 V；拍 C3 天线端特写；断开墨水屏负载复测；
+  有条件时换一块 ESP32-C3 板做交叉验证。
+
+**2026-11-17 21:15 11 dBm 发射功率测试（未完成）**：
+
+- 将 TX 功率从 19.5 dBm 降到 11 dBm（`WIFI_POWER_11dBm`，读回 44）后重刷；
+- 本次扫描列表中没有目标热点，`target NOT found`，失败为 `NO_SSID_AVAIL (201)`；
+- 因此这次没有真正测试 11 dBm 下的认证，热点可能已自动关闭；
+- 同一时刻 Xiaomi AP 可见（channel 3，RSSI -49 ~ -55 dBm，WPA/WPA2）。
+- 待热点重新开启，或切回 Xiaomi 凭据后，再做 11 dBm 的有效测试。
+
+**2026-11-17 21:19 11 dBm 测试成功**：
+
+- 热点重新开启后，扫描到目标 AP（channel 6，RSSI -43 dBm，WPA2）；
+- TX power 11 dBm（`WiFi.getTxPower()` 读回 44）；
+- Wi-Fi 连接成功并获得 IP；
+- NTP 同步成功：`2026-11-17 21:19:58`；
+- 全刷 `_Update_Full : 1700000`，随后整分钟局刷 `_Update_Part : 400000`；
+- 心跳：`Wi-Fi=1 NTP=1`。
+
+结论：**19.5 dBm 下认证失败，11 dBm 下成功**。该 C3 板在最大发射功率下存在
+供电跌落或 PA 失真的可能；当前 AP 信号足够强，后续默认使用 **11 dBm**。
+下一步：切回家里 Xiaomi Wi-Fi 验证，成功后移除扫描诊断代码，恢复干净固件。
+
+**2026-11-17 21:24 家庭 Wi-Fi 验证成功（清理版固件）**：
+
+- Xiaomi AP：channel 3，RSSI -44 dBm，WPA/WPA2；
+- TX power 11 dBm；
+- Wi-Fi 连接成功并获得 IP；
+- NTP：`2026-11-17 21:24:09`；
+- 全刷 `_Update_Full : 1700000`，随后整分钟局刷 `_Update_Part : 400000`；
+- 心跳：`Wi-Fi=1 NTP=1`；
+- 已移除 Wi-Fi 扫描、事件日志和详细凭据打印；
+- 固件保留 `WiFi.setTxPower(WIFI_POWER_11dBm)`。
+
+**实验 03 完成。**
+
+下一步：
+
+1. 核对路由器 2.4 GHz Wi-Fi 密码，更新 `include/secrets.h`
+   （不要把密码发到对话，也不要提交）；
+2. 检查路由器是否开启 MAC 过滤，必要时将 ESP32 MAC
+   `AC:A2:6A:8E:29:80` 加入白名单；
+3. 连接成功后确认 NTP 时间、日期、星期与日历显示；
+4. 观察每分钟局刷残影，必要时调整刷新策略；
+5. 成功后移除扫描诊断代码，恢复干净固件。

@@ -37,6 +37,8 @@
 - 墨水屏 GPIO 映射以 `include/epd_config.h` 为准：SCK=4、MOSI=6、CS=7、DC=3、RST=2、BUSY=10
   （按 V1.5 驱动板卖家的 ESP32C3 接线图）。
   修改引脚必须同步更新 `docs/progress.md` 的接线表。
+- 本机 ESP32-C3 SuperMini 的 Wi-Fi 发射功率固定为 `WIFI_POWER_11dBm`。
+  19.5 dBm 最大功率会导致 WPA2 认证失败（disconnect reason 2/202），不要改回最大功率。
 - 墨水屏低频刷新，避免残影；**不要为了显示秒数而整屏刷新**。
 - AI 使用数据必须来自真实、可靠的数据源，禁止编造；区分订阅额度与 API Token 用量。
 - 优先复用已有工具链与库，不擅自安装不必要的系统级依赖或修改全局环境。
