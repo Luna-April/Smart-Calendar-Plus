@@ -44,8 +44,12 @@
 - 墨水屏 GPIO 映射以 `include/epd_config.h` 为准：SCK=4、MOSI=6、CS=7、DC=3、RST=2、BUSY=10
   （按 V1.5 驱动板卖家的 ESP32C3 接线图）。
   修改引脚必须同步更新 `docs/progress.md` 的接线表。
-- 本机 ESP32-C3 SuperMini 的 Wi-Fi 发射功率固定为 `WIFI_POWER_11dBm`。
-  19.5 dBm 最大功率会导致 WPA2 认证失败（disconnect reason 2/202），不要改回最大功率。
+- 本机 ESP32-C3 SuperMini 的 Wi-Fi 发射功率固定为 `WIFI_POWER_11dBm`
+  （STA 与配网 AP 都必须 11 dBm）。19.5 dBm 最大功率会导致 WPA2 认证失败
+  （disconnect reason 2/202），不要改回最大功率。
+- Wi-Fi 首次配网：无凭据/连接失败时启动 `SmartCalendar-XXXX` 热点
+  （WPA2 `smartcalendar`、channel 6、11 dBm），配置页 `http://192.168.4.1`；
+  保存到 NVS 后重启。主网页“重新配置 Wi-Fi”或长按 BOOT 5 秒可重置 Wi-Fi。
 - 今日待办数据源：ESP32 本地网页（`http://<设备IP>/`）编辑，存入 NVS
   （`Preferences`，命名空间 `todos`），不依赖外部服务；最多 3 条、每条 40 个字符。
   已使用 U8g2 `u8g2_font_wqy16_t_gb2312` 支持常用中文（GB2312）；
@@ -66,8 +70,12 @@
 ## 5. 版本与密钥
 
 - 可以初始化本地 Git 仓库，但**不得擅自创建远程仓库、提交或推送**。
-- Wi-Fi 密码、API Key、Token 等敏感信息不得写入受版本管理的文件。
-  预计使用 `include/secrets.h`（已被 `.gitignore` 排除）。
+- Wi-Fi 凭据由首次开机配网页写入 ESP32 NVS（`Preferences`，命名空间 `wifi`），
+  编译镜像不含 Wi-Fi 密码；不再依赖 `include/secrets.h`。
+- API Key、Token 等敏感信息不得写入受版本管理的文件；AI helper 的 token
+  只留在电脑的 `~/.codex/auth.json`。
+- 配网热点固定使用 WPA2 密码 `smartcalendar`，仅用于本地初始化；
+  它不是用户的家庭 Wi-Fi 密码。
 - `.pio/`、`.venv/`、编译产物与日志不纳入版本管理。
 
 ## 6. 文档要求

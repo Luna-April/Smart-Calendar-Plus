@@ -2,6 +2,7 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include <Preferences.h>
 #include <time.h>
 
@@ -13,18 +14,12 @@
 #include "epd_config.h"
 #include "ui_layout.h"
 
-#if __has_include("secrets.h")
-#include "secrets.h"
-#else
-#error "Missing include/secrets.h - copy include/secrets.example.h and fill in Wi-Fi credentials."
-#endif
-
-// Experiment 05 - Wi-Fi, NTP, calendar, todos and ChatGPT Plus quota.
+// Smart Calendar - Wi-Fi onboarding, NTP, calendar, todos and ChatGPT quota.
 //
-// Todos are entered from a small web page served by the ESP32 and stored in
-// NVS (Preferences). A local helper reads the Codex CLI usage endpoint and
-// POSTs the 5-hour/weekly remaining quota to /quota; the token stays on the PC.
-// Current fonts are ASCII-only; non-ASCII bytes are displayed as '?'.
+// First boot (or failed Wi-Fi) starts a setup AP + captive portal. Credentials
+// are stored in NVS, so the compiled image has no hard-coded Wi-Fi secrets.
+// A local helper can optionally POST the Codex 5h/week remaining quota to
+// /quota; the token stays on the PC.
 
 namespace {
 
@@ -38,6 +33,8 @@ constexpr uint32_t NTP_TIMEOUT_MS = 15000;
 constexpr uint32_t WIFI_RETRY_MS = 30000;
 constexpr uint32_t NTP_RETRY_MS = 30000;
 constexpr uint32_t FULL_REFRESH_MS = 3600000UL;  // 1 hour
+constexpr uint32_t WIFI_SETUP_FALLBACK_MS = 120000;  // 2 min offline -> setup
+constexpr int PIN_BOOT_BUTTON = 9;  // ESP32-C3 SuperMini BOOT, active low
 
 constexpr int kMaxTodos = 3;
 constexpr size_t kMaxTodoChars = 40;
@@ -48,6 +45,15 @@ GxEPD2_BW<epd::Driver, epd::HEIGHT> display(
 UiLayout ui(display);
 
 WebServer server(80);
+WebServer setupServer(80);
+DNSServer dnsServer;
+bool setupMode = false;
+bool setupHandlersRegistered = false;
+String apSsid;
+String apPassword = "smartcalendar";
+String wifiSsid;
+String wifiPassword;
+
 String todoText[kMaxTodos];
 bool todoDone[kMaxTodos] = {false, false, false};
 bool webServerStarted = false;
@@ -185,6 +191,33 @@ void saveQuota() {
   prefs.end();
 }
 
+void loadWifiCredentials() {
+  Preferences prefs;
+  prefs.begin("wifi", true);
+  wifiSsid = prefs.getString("ssid", "");
+  wifiPassword = prefs.getString("pass", "");
+  prefs.end();
+}
+
+void saveWifiCredentials(const String& ssid, const String& password) {
+  Preferences prefs;
+  prefs.begin("wifi", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", password);
+  prefs.end();
+  wifiSsid = ssid;
+  wifiPassword = password;
+}
+
+void clearWifiCredentials() {
+  Preferences prefs;
+  prefs.begin("wifi", false);
+  prefs.clear();
+  prefs.end();
+  wifiSsid = "";
+  wifiPassword = "";
+}
+
 void handleRoot() {
   String page;
   page.reserve(2560);
@@ -234,7 +267,12 @@ void handleRoot() {
     page += qbuf;
   }
   page += F("<p class='note'>由本机 Codex helper 自动更新；"
-            "token 只留在电脑上。</p></body></html>");
+            "token 只留在电脑上。</p>");
+  page += F("<h2>设备设置</h2>");
+  page += F("<form method='POST' action='/resetwifi' "
+            "onsubmit=\"return confirm('清除 Wi-Fi 并重启？')\">"
+            "<button type='submit'>重新配置 Wi-Fi</button></form>");
+  page += F("<p class='note'>也可以长按板载 BOOT 键 5 秒。</p></body></html>");
   server.send(200, "text/html; charset=utf-8", page);
 }
 
@@ -286,15 +324,194 @@ void handleQuota() {
   server.send(200, "text/plain", "OK");
 }
 
+void handleResetWifi() {
+  server.send(200, "text/html; charset=utf-8",
+              "<meta charset='utf-8'>Wi-Fi 已清除，设备正在重启...");
+  delay(500);
+  clearWifiCredentials();
+  ESP.restart();
+}
+
 void startWebServer() {
   if (webServerStarted) return;
+  setupServer.stop();
+  dnsServer.stop();
+  WiFi.softAPdisconnect(true);
   server.on("/", HTTP_GET, handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/quota", HTTP_POST, handleQuota);
+  server.on("/resetwifi", HTTP_POST, handleResetWifi);
   server.begin();
   webServerStarted = true;
   Serial.printf("Web UI: http://%s/\n", WiFi.localIP().toString().c_str());
   Serial.println("Quota endpoint: POST /quota");
+}
+
+void handleSetupRoot() {
+  Serial.println("Setup page requested");
+  String page;
+  page.reserve(8192);
+  page += F("<!doctype html><html><head><meta charset='utf-8'>");
+  page += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  page += F("<title>Smart Calendar 配网</title>");
+  page += F("<style>body{font-family:system-ui,sans-serif;margin:20px;max-width:560px;}"
+            "h1{font-size:20px}label{display:block;margin-top:14px;font-size:14px}"
+            "select,input{width:100%;box-sizing:border-box;padding:8px;font-size:16px}"
+            "button{padding:10px 18px;font-size:16px;margin-top:16px}"
+            ".note{color:#555;font-size:13px;line-height:1.4}</style></head><body>");
+  page += F("<h1>Smart Calendar 配网</h1>");
+  page += F("<p class='note'>热点：");
+  page += htmlEscape(apSsid);
+  page += F("<br>热点密码：");
+  page += htmlEscape(apPassword);
+  page += F("<br>打开 <b>http://192.168.4.1</b>；仅支持 2.4 GHz Wi-Fi。</p>");
+  page += F("<form method='POST' action='/connect'>");
+  page += F("<label>选择 Wi-Fi</label><select name='ssid_sel'>"
+            "<option value=''>-- 选择 --</option>");
+
+  const int n = WiFi.scanNetworks();
+  Serial.printf("Setup scan: %d networks\n", n);
+  for (int i = 0; i < n; ++i) {
+    const String ssid = WiFi.SSID(i);
+    if (ssid.length() == 0) {
+      continue;
+    }
+    bool duplicate = false;
+    for (int j = 0; j < i; ++j) {
+      if (WiFi.SSID(j) == ssid) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) {
+      continue;
+    }
+    page += F("<option value='");
+    page += htmlEscape(ssid);
+    page += F("'>");
+    page += htmlEscape(ssid);
+    page += F(" (");
+    page += String(WiFi.RSSI(i));
+    page += F(" dBm)</option>");
+  }
+
+  page += F("</select>");
+  page += F("<label>或手动输入 SSID</label>"
+            "<input type='text' name='ssid' maxlength='32' "
+            "placeholder='隐藏网络时使用'>");
+  page += F("<label>密码</label>"
+            "<input type='password' name='password' maxlength='64'>");
+  page += F("<button type='submit'>连接</button></form>");
+  page += F("<p><a href='/'>重新扫描</a></p>");
+  page += F("<p class='note'>保存后设备会重启并连接；若失败，重新连接本热点并打开 "
+            "http://192.168.4.1。</p></body></html>");
+  setupServer.send(200, "text/html; charset=utf-8", page);
+}
+
+void handleSetupConnect() {
+  String ssid = setupServer.arg("ssid");
+  ssid.trim();
+  if (ssid.length() == 0) {
+    ssid = setupServer.arg("ssid_sel");
+    ssid.trim();
+  }
+  String password = setupServer.arg("password");
+
+  if (ssid.length() == 0) {
+    setupServer.send(200, "text/html; charset=utf-8",
+                     "<meta charset='utf-8'>未选择 Wi-Fi。"
+                     "<a href='/'>返回</a>");
+    return;
+  }
+  if (ssid.length() > 32) {
+    ssid = ssid.substring(0, 32);
+  }
+  if (password.length() > 64) {
+    password = password.substring(0, 64);
+  }
+  saveWifiCredentials(ssid, password);
+  Serial.println("Setup credentials saved, restarting");
+
+  String page;
+  page.reserve(512);
+  page += F("<!doctype html><html><head><meta charset='utf-8'>");
+  page += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  page += F("<title>已保存</title></head>"
+            "<body style='font-family:system-ui;margin:20px'>");
+  page += F("<h1>已保存</h1><p>设备正在重启并连接 Wi-Fi...</p>");
+  page += F("<p>如果 30 秒后仍未连接，请重新连接热点 <b>");
+  page += htmlEscape(apSsid);
+  page += F("</b>（密码 ");
+  page += htmlEscape(apPassword);
+  page += F("）并打开 <b>http://192.168.4.1</b>。</p></body></html>");
+  setupServer.send(200, "text/html; charset=utf-8", page);
+  delay(1500);
+  ESP.restart();
+}
+
+void handleSetupNotFound() {
+  setupServer.sendHeader("Location", "http://192.168.4.1/", true);
+  setupServer.send(302, "text/plain", "");
+}
+
+String makeApSsid() {
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  const String suffix =
+      mac.length() >= 4 ? mac.substring(mac.length() - 4) : String("0000");
+  return "SmartCalendar-" + suffix;
+}
+
+void startSetupPortal(const String& reason) {
+  if (setupMode) {
+    return;
+  }
+  setupMode = true;
+  webServerStarted = false;
+  mainScreenVisible = false;
+  server.stop();
+
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_AP_STA);
+  // This board is unstable at 19.5 dBm; 11 dBm is the known-good TX power.
+  WiFi.setTxPower(WIFI_POWER_11dBm);
+  IPAddress apIP(192, 168, 4, 1);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  apSsid = makeApSsid();
+  const bool apStarted =
+      WiFi.softAP(apSsid.c_str(), apPassword.c_str(), 6, 0, 4);
+  Serial.printf("softAP: started=%d, SSID=%s, IP=%s, mode=%d\n", apStarted,
+                apSsid.c_str(), WiFi.softAPIP().toString().c_str(),
+                static_cast<int>(WiFi.getMode()));
+  dnsServer.start(53, "*", apIP);
+
+  if (!setupHandlersRegistered) {
+    setupServer.on("/", HTTP_GET, handleSetupRoot);
+    setupServer.on("/connect", HTTP_POST, handleSetupConnect);
+    setupServer.onNotFound(handleSetupNotFound);
+    setupHandlersRegistered = true;
+  }
+  setupServer.begin();
+
+  ui.drawSetupScreen(apSsid, apPassword, "192.168.4.1", reason);
+  Serial.printf("Setup AP: %s / http://192.168.4.1\n", apSsid.c_str());
+  Serial.printf("Setup reason: %s\n", reason.c_str());
+}
+
+void checkBootButton() {
+  static uint32_t pressedAt = 0;
+  if (digitalRead(PIN_BOOT_BUTTON) == LOW) {
+    if (pressedAt == 0) {
+      pressedAt = millis();
+    }
+    if (millis() - pressedAt > 5000) {
+      clearWifiCredentials();
+      Serial.println("Wi-Fi reset by BOOT long press");
+      ESP.restart();
+    }
+  } else {
+    pressedAt = 0;
+  }
 }
 
 UiData makeUiData(const struct tm& t) {
@@ -359,8 +576,8 @@ const char* wifiStatusName(wl_status_t status) {
 }
 
 bool connectWiFi() {
-  if (strcmp(WIFI_SSID, "YOUR_WIFI_SSID") == 0) {
-    Serial.println("Wi-Fi: edit include/secrets.h first");
+  if (wifiSsid.length() == 0) {
+    Serial.println("Wi-Fi: no credentials");
     return false;
   }
 
@@ -375,7 +592,8 @@ bool connectWiFi() {
   WiFi.setTxPower(WIFI_POWER_11dBm);
 
   Serial.println("Wi-Fi: connecting...");
-  const wl_status_t beginResult = WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  const wl_status_t beginResult =
+      WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
   Serial.printf("Wi-Fi: begin() -> %s (%d)\n", wifiStatusName(beginResult),
                 beginResult);
 
@@ -475,23 +693,33 @@ void setup() {
   display.init(115200, true, 50, false);
   display.setRotation(0);
   pinMode(epd::PIN_BUSY, INPUT_PULLUP);
+  pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
   ui.begin();
 
   loadTodos();
   loadQuota();
+  loadWifiCredentials();
+
+  if (wifiSsid.length() == 0) {
+    startSetupPortal("首次使用，请配置 Wi-Fi");
+    return;
+  }
+
   drawConnectingScreen();
 
-  const bool wifiConnected = connectWiFi();
-  if (wifiConnected) {
-    startWebServer();
-    syncNtp();
+  if (!connectWiFi()) {
+    startSetupPortal("Wi-Fi 连接失败，请重新配置");
+    return;
   }
+
+  startWebServer();
+  syncNtp();
 
   struct tm t;
   if (getLocalTime(&t, 0)) {
     drawFullScreen(t);
   } else {
-    drawNoTimeScreen(wifiConnected);
+    drawNoTimeScreen(true);
     lastMinute = -1;
     lastDay = -1;
   }
@@ -502,14 +730,32 @@ void setup() {
 }
 
 void loop() {
+  checkBootButton();
+
+  if (setupMode) {
+    dnsServer.processNextRequest();
+    setupServer.handleClient();
+    delay(10);
+    return;
+  }
+
   if (webServerStarted) {
     server.handleClient();
   }
 
   const uint32_t now = millis();
+  static uint32_t wifiDownSince = 0;
 
   // Wi-Fi reconnect.
   if (WiFi.status() != WL_CONNECTED) {
+    if (wifiDownSince == 0) {
+      wifiDownSince = now;
+    }
+    if (now - wifiDownSince > WIFI_SETUP_FALLBACK_MS) {
+      startSetupPortal("Wi-Fi 连接失败，请重新配置");
+      return;
+    }
+
     if (lastWifiConnected) {
       lastWifiConnected = false;
       struct tm t;
@@ -523,6 +769,7 @@ void loop() {
       Serial.println("Wi-Fi: retrying...");
       if (connectWiFi()) {
         lastWifiConnected = true;
+        wifiDownSince = 0;
         startWebServer();
         syncNtp();
         struct tm t;
@@ -534,6 +781,7 @@ void loop() {
     delay(200);
     return;
   }
+  wifiDownSince = 0;
 
   // Wi-Fi is up but NTP has not synced yet: retry periodically.
   if (!ntpSynced) {

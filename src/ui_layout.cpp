@@ -323,3 +323,27 @@ void UiLayout::drawAIUsageCardPartial(const UiData& data) {
     drawAIUsageCard(data);
   } while (display_.nextPage());
 }
+
+void UiLayout::drawSetupScreen(const String& apSsid, const String& apPassword,
+                               const String& apIp, const String& reason) {
+  display_.setFullWindow();
+  display_.firstPage();
+  do {
+    display_.fillScreen(GxEPD_WHITE);
+    drawOuterFrame();
+    UiData header;
+    header.wifiOk = true;
+    header.ip = apIp;
+    drawHeader(header);
+
+    drawText16(12, 62, "Wi-Fi 设置");
+    drawText16(12, 92, reason);
+    drawText16(12, 124, "1. 手机连接 Wi-Fi:");
+    drawText16(30, 146, apSsid);
+    drawText16(30, 166, "密码: " + apPassword);
+    drawText16(12, 194, "2. 打开浏览器:");
+    drawText16(30, 216, "http://" + apIp);
+    drawText16(12, 244, "3. 选择 2.4G Wi-Fi 并输入密码");
+    drawText16(12, 270, "仅支持 2.4 GHz；保存后自动重启");
+  } while (display_.nextPage());
+}

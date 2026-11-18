@@ -3,10 +3,11 @@
 一款基于 **ESP32-C3** 与 **4.2 英寸黑白电子墨水屏** 的低成本桌面台历。
 设备通过 Wi-Fi 校时与获取信息，USB 持续供电，界面追求极简、低频刷新。
 
-> 状态：**实验 05 已完成（2026-11-17）**——Wi-Fi/NTP/日期/待办/ChatGPT Plus 额度均已验证；
+> 状态：**产品化配网已完成（2026-11-18）**——首次开机自动开 `SmartCalendar-XXXX`
+> 配网热点，手机配置家庭 Wi-Fi 后保存到 NVS；之后插电即用，不再依赖 `secrets.h`。
 > 当前为卡片式首页：左侧时间/今日待办，右侧紧凑月历，底部 AI 剩余额度。
-> 额度由本机 Codex CLI helper 自动推送；ESP32-C3 的 Wi-Fi TX 固定为 **11 dBm**。
-> 实验 04/03/02/01 已完成。
+> ESP32-C3 的 Wi-Fi TX（STA 与配网 AP）固定为 **11 dBm**。
+> 实验 05/04/03/02/01 已完成。
 
 本项目与 `/home/hy/ai-desktop-robot/`（AI 桌宠机器人）完全独立，后者不属于本仓库范围。
 
@@ -74,7 +75,6 @@ Smart-Calendar/
 ├── src/ui_layout.cpp       # 卡片式首页绘制（页头/时间/待办/月历/AI）
 ├── include/ui_layout.h     # UiData 与 UiLayout 接口
 ├── include/epd_config.h    # 墨水屏引脚、尺寸与驱动类
-├── include/secrets.example.h # Wi-Fi 凭据模板（secrets.h 不提交）
 ├── include/                # 其他项目头文件（预留）
 ├── lib/                    # 项目私有库（预留）
 ├── docs/progress.md        # 实验记录与进度
@@ -103,18 +103,19 @@ cd /home/hy/Smart-Calendar
 .venv/bin/pio device monitor --port /dev/ttyACM1 --baud 115200
 ```
 
-固件行为（实验 05，已烧录）：
+固件行为（产品化，已烧录）：
 
-1. 连接 2.4 GHz Wi-Fi（凭据在 `include/secrets.h`，TX 固定 11 dBm）；
-2. NTP 校时，默认时区 `CST-8`；
-3. 顶部页头：线框日历图标 + `Smart Calendar` + 网页 IP；
-4. 左列：42px 大号时间卡 + 中文日期/星期；下方“今日待办”卡，最多 3 条；
-5. 右列：紧凑月历卡（无表格线，当天黑框白底黑字高亮）；
-6. 底部：`AI 剩余` 卡，显示 ChatGPT Plus 5 小时/周剩余百分比；
-7. 待办通过 `http://<设备IP>/` 编辑，保存在 NVS；支持中文（GB2312，最多 40 个字符）；
-8. 额度由电脑上的 Codex helper POST 到 `/quota`，保存在 NVS；
-9. 启动、跨日、Wi-Fi 状态变化、每小时、待办保存后全刷；
-   时间卡每分钟局刷，AI 剩余卡在 helper 推送后局刷。
+1. 首次开机或 Wi-Fi 连接失败：启动配网热点 `SmartCalendar-XXXX`
+   （WPA2，密码 `smartcalendar`，channel 6，11 dBm），屏幕显示连接步骤；
+2. 手机连接该热点，打开 `http://192.168.4.1`，选择 2.4 GHz Wi-Fi 并输入密码；
+3. 保存到 NVS 后设备重启；成功进入主界面，失败回到配网热点；
+4. 主界面：页头、时间卡、今日待办卡、紧凑月历卡、AI 剩余卡；
+5. 待办通过 `http://<设备IP>/` 编辑，保存在 NVS；支持中文（GB2312，最多 40 个字符）；
+6. 额度由电脑上的 Codex helper POST 到 `/quota`，保存在 NVS（可选）；
+7. 重新配网：主网页“重新配置 Wi-Fi”或长按 BOOT 5 秒（只清 Wi-Fi）；
+8. 启动、跨日、Wi-Fi 状态变化、每小时、待办保存后全刷；
+   时间卡每分钟局刷，AI 剩余卡在 helper 推送后局刷；
+9. NTP 默认时区 `CST-8`；编译镜像不含任何 Wi-Fi 密码。
 
 实验记录见 [`docs/progress.md`](docs/progress.md) 的“实验 05：ChatGPT Plus 额度”、
 “实验 05.1：中文字体与布局调整”和“实验 05.2：卡片式首页 UI”。
@@ -138,18 +139,23 @@ cd /home/hy/Smart-Calendar
 
 ## 实验 03：Wi-Fi / NTP / 日历
 
-### Wi-Fi 配置（密码不提交）
+### 首次 Wi-Fi 配置（产品化）
 
-```bash
-cp include/secrets.example.h include/secrets.h
-```
+1. 首次开机（或连接失败）时，设备启动热点 `SmartCalendar-XXXX`；
+2. 手机连接该热点（WPA2，密码 `smartcalendar`）；
+3. 打开 `http://192.168.4.1`；
+4. 选择 **2.4 GHz** Wi-Fi，输入密码，保存；
+5. 设备重启并连接；成功后回到主界面。
 
-编辑 `include/secrets.h`，填入 **2.4 GHz** Wi-Fi 的 SSID 和密码。该文件已被 `.gitignore`
-排除，不要提交，也不要把密码发到聊天里。
+Wi-Fi 凭据保存在 ESP32 NVS（`Preferences`，命名空间 `wifi`），
+编译镜像不含 Wi-Fi 密码；不再需要 `include/secrets.h`。
+重新配网：主网页“重新配置 Wi-Fi”或长按 BOOT 5 秒。
 
 默认时区为 `CST-8`（中国标准时间，UTC+8）；如需修改，编辑 `src/main.cpp` 的 `TIMEZONE`。
 
 ### 显示与刷新
+
+> 注：这是实验 03 的初始布局；当前卡片式首页和 AI 剩余卡见实验 05.2。
 
 - 顶部：24pt `HH:MM`；
 - 第二行：中文日期/星期（`YYYY年MM月DD日 星期X`）；
@@ -160,7 +166,7 @@ cp include/secrets.example.h include/secrets.h
 
 ### 测试
 
-填写 `include/secrets.h` 后：
+完成首次配网后：
 
 ```bash
 .venv/bin/pio run -t upload --upload-port /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_AC:A2:6A:8E:29:80-if00
@@ -264,7 +270,8 @@ loginctl enable-linger "$USER"
 - AI 剩余卡显示 5 小时/本周剩余百分比，不再使用示例值；
 - 串口确认时间卡/AI 剩余卡局刷：`_Update_Part : 400000`；
 - 用户级服务已启用并运行，`linger=yes`；
-- 当前编译：RAM 16.6%，Flash 84.4%。
+- 当前编译（含配网）：RAM 16.8%，Flash 86.3%；
+- 产品用户未运行 Codex helper 时，AI 剩余卡显示 `--`，核心时间/月历/待办不受影响。
 
 ## 实验 02 结果摘要
 
@@ -299,3 +306,7 @@ loginctl enable-linger "$USER"
 
 > 2026-11-17 追加：加入中文字体（GB2312），改为卡片式首页；
 > AI 剩余卡显示 5 小时/周剩余额度。
+>
+> 2026-11-18 追加：产品化 Wi-Fi 首次配网（`SmartCalendar-XXXX` /
+> `http://192.168.4.1`），凭据存 NVS，不再需要 `secrets.h`；
+> 支持主网页重新配网和长按 BOOT 5 秒重置。

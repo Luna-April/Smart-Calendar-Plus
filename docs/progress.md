@@ -911,6 +911,64 @@ Flash: [========  ]  84.4% (used 1106444 bytes from 1310720 bytes)
 
 **实验 05.2 完成。**
 
+---
+
+## 产品化：Wi-Fi 首次配网（2026-11-18）
+
+### 1. 目标
+
+- 给别人使用时：插电 -> 手机配网 -> 输入家庭 Wi-Fi -> 保存后自动连接；
+- 不再需要改 `secrets.h`、重新编译或串口调试；
+- 支持重新配网和 Wi-Fi 重置。
+
+### 2. 实现
+
+- Wi-Fi 凭据改存 NVS（`Preferences`，命名空间 `wifi`：`ssid` / `pass`）；
+- 编译镜像不再 include `secrets.h`；本地 `include/secrets.h` 仅遗留，不参与构建；
+- 首次无凭据 / 连接失败：
+  - 启动 `SmartCalendar-XXXX` 热点（MAC 后 4 位）；
+  - WPA2，密码 `smartcalendar`，channel 6，11 dBm；
+  - AP IP `192.168.4.1`，DNSServer captive portal；
+  - 配置页扫描 2.4 GHz 网络、密码输入、保存后 `ESP.restart()`；
+- 主程序：
+  - 加载 NVS 凭据并连接；成功进入主 UI，失败回到配网热点；
+  - 运行中连续 2 分钟断线自动进入配网；
+  - 主网页“重新配置 Wi-Fi” -> 清 `wifi` NVS + 重启；
+  - 长按 BOOT（GPIO9）5 秒 -> 清 `wifi` NVS + 重启；
+- 墨水屏 `drawSetupScreen()` 显示热点名、密码、`http://192.168.4.1`
+  和操作步骤；
+- 配网 AP 也固定 11 dBm：这块 C3 在 19.5 dBm 下不稳定；
+- 待办 / AI 数据不受配网影响，NVS 保留。
+
+### 3. 调试过程
+
+- 第一版开放热点 / channel 6 / max TX：串口 `softAP started=1`，
+  但手机手动添加也提示“找不到网络”；
+- 改为 WPA2 `smartcalendar` + channel 6 + 11 dBm 后，手机成功连接；
+- 手机打开 `http://192.168.4.1`，选择家庭 2.4 GHz Wi-Fi，保存；
+- 设备重启后连接成功：`IP <设备IP>`，
+  NTP `2026-11-18 22:33:24`；
+- 配网 AP 关闭，主界面恢复；
+- quota systemd helper 重启后推送成功：`-> ESP32 200`；
+- 取消“待办全空显示示例”的兜底，清空后显示“暂无待办”。
+
+### 4. 编译
+
+```text
+RAM:   [==        ]  16.8% (used 55212 bytes from 327680 bytes)
+Flash: [========= ]  86.3% (used 1131172 bytes from 1310720 bytes)
+```
+
+### 5. 产品化限制 / 后续
+
+- 配网 AP 密码固定 `smartcalendar`；产品化可改为每台唯一密码并印在机身；
+- 时区固定 `CST-8`；海外使用需增加时区设置；
+- AI 剩余卡依赖电脑上的 Codex helper；普通用户未配置时显示 `--`，
+  核心时间/月历/待办不需要 helper；
+- Wi-Fi 凭据以明文存 NVS；家庭设备可接受，产品化可考虑 NVS 加密；
+- 重新配网按钮 / BOOT 重置已实现；本次实测了首次配网和重启连接，
+  BOOT 长按路径未单独实测。
+
 下一步：
 
 1. 核对路由器 2.4 GHz Wi-Fi 密码，更新 `include/secrets.h`

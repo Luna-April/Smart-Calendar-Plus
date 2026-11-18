@@ -42,6 +42,8 @@ class UiLayout {
   void drawMainUI(const UiData& data);
   void drawTimeCardPartial(const UiData& data);
   void drawAIUsageCardPartial(const UiData& data);
+  void drawSetupScreen(const String& apSsid, const String& apPassword,
+                       const String& apIp, const String& reason);
 
  private:
   SmartDisplay& display_;
