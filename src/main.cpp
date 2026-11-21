@@ -4,6 +4,9 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
+#include <LittleFS.h>
+#include "album_page.h"
+#include "photo_codec.h"
 #include <time.h>
 
 #include <Adafruit_GFX.h>
@@ -43,6 +46,38 @@ GxEPD2_BW<epd::Driver, epd::HEIGHT> display(
     epd::Driver(epd::PIN_CS, epd::PIN_DC, epd::PIN_RST, epd::PIN_BUSY));
 
 UiLayout ui(display);
+
+uint8_t photoBitmap[photo::kBytes];
+bool hasPhoto = false;
+bool photoDirty = false;
+bool photoStorageReady = false;
+
+void loadPhoto() {
+  // This partition was unused by the calendar; format only on first use.
+  Preferences prefs;
+  prefs.begin("album", false);
+  const bool initialized = prefs.getBool("fs", false);
+  photoStorageReady = LittleFS.begin(!initialized);
+  if (photoStorageReady) {
+    prefs.putBool("fs", true);
+    File file = LittleFS.open("/photo.bin", "r");
+    hasPhoto = file && file.size() == photo::kBytes &&
+               file.read(photoBitmap, photo::kBytes) == photo::kBytes;
+    file.close();
+  }
+  prefs.end();
+}
+
+void drawPhoto() {
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.drawBitmap(0, 0, photoBitmap, 400, 300, GxEPD_BLACK);
+  } while (display.nextPage());
+  photoDirty = false;
+}
+
 
 WebServer server(80);
 WebServer setupServer(80);
@@ -219,61 +254,55 @@ void clearWifiCredentials() {
 }
 
 void handleRoot() {
-  String page;
-  page.reserve(2560);
-  page += F("<!doctype html><html><head><meta charset='utf-8'>");
-  page += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
-  page += F("<title>Smart Calendar</title>");
-  page += F("<style>body{font-family:system-ui,sans-serif;margin:20px;max-width:560px;}"
-            "h1{font-size:20px}h2{font-size:17px;margin-top:24px}"
-            ".row{display:flex;align-items:center;gap:8px;"
-            "margin:10px 0}input[type=text]{flex:1;min-width:0;padding:8px;"
-            "font-size:16px}input[type=checkbox]{width:22px;height:22px}"
-            "button{padding:10px 18px;font-size:16px;margin-top:8px}"
-            ".note{color:#555;font-size:13px;line-height:1.4}</style></head><body>");
-  page += F("<h1>Smart Calendar - 今日待办</h1>");
-  page += F("<p class='note'>最多 3 条，每条 40 个字符；支持中文（GB2312），"
-            "emoji 可能无法显示。</p>");
-  page += F("<form method='POST' action='/save'>");
-  for (int i = 0; i < kMaxTodos; ++i) {
-    char name[16];
-    snprintf(name, sizeof(name), "todo%d", i);
-    char doneName[16];
-    snprintf(doneName, sizeof(doneName), "done%d", i);
-    page += F("<div class='row'><input type='checkbox' name='");
-    page += doneName;
-    page += F("'");
-    if (todoDone[i]) page += F(" checked");
-    page += F("><input type='text' name='");
-    page += name;
-    page += F("' maxlength='40' value='");
-    page += htmlEscape(todoText[i]);
-    page += F("'></div>");
+  server.send_P(200, "text/html; charset=utf-8", ALBUM_HTML);
+}
+
+void handleGetPhoto() {
+  if (!hasPhoto) { server.send(404, "text/plain", "No photo"); return; }
+  static const char hex[] = "0123456789abcdef";
+  String body;
+  if (!body.reserve(photo::kBytes * 2)) { server.send(503, "text/plain", "Out of memory"); return; }
+  for (size_t i = 0; i < photo::kBytes; ++i) {
+    body += hex[photoBitmap[i] >> 4];
+    body += hex[photoBitmap[i] & 15];
   }
-  page += F("<button type='submit'>Save</button></form>");
-  page += F("<h2>ChatGPT Plus 额度</h2>");
-  if (quotaH5 < 0 || quotaWk < 0) {
-    page += F("<p>暂无额度数据，请在电脑上运行 "
-              "<code>tools/codex_quota_push.py</code>。</p>");
-  } else {
-    const String h5r = htmlEscape(quotaH5Reset);
-    const String wkr = htmlEscape(quotaWkReset);
-    const String upd = htmlEscape(quotaUpdated);
-    char qbuf[256];
-    snprintf(qbuf, sizeof(qbuf),
-             "<p>5 小时: %d%% (重置 %s)<br>本周: %d%% (重置 %s)<br>"
-             "更新: %s</p>",
-             quotaH5, h5r.c_str(), quotaWk, wkr.c_str(), upd.c_str());
-    page += qbuf;
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "text/plain", body);
+}
+
+void handlePhoto() {
+  const String& hex = server.arg("plain");
+  // Validate the entire body before allocating, writing or altering the screen.
+  if (!photo::validHex(hex.c_str(), hex.length())) {
+    server.send(400, "text/plain; charset=utf-8", "图片格式无效，需要 400×300 黑白位图");
+    return;
   }
-  page += F("<p class='note'>由本机 Codex helper 自动更新；"
-            "token 只留在电脑上。</p>");
-  page += F("<h2>设备设置</h2>");
-  page += F("<form method='POST' action='/resetwifi' "
-            "onsubmit=\"return confirm('清除 Wi-Fi 并重启？')\">"
-            "<button type='submit'>重新配置 Wi-Fi</button></form>");
-  page += F("<p class='note'>也可以长按板载 BOOT 键 5 秒。</p></body></html>");
-  server.send(200, "text/html; charset=utf-8", page);
+  if (!photoStorageReady) {
+    server.send(507, "text/plain; charset=utf-8", "照片存储不可用，原照片保持不变");
+    return;
+  }
+  File file = LittleFS.open("/photo.tmp", "w");
+  bool written = static_cast<bool>(file);
+  // Decode in small chunks; retain the previous in-memory photo until rename.
+  uint8_t chunk[100];
+  for (size_t offset = 0; written && offset < photo::kBytes; offset += sizeof(chunk)) {
+    for (size_t i = 0; i < sizeof(chunk); ++i) {
+      chunk[i] = photo::decodeByte(hex.c_str() + (offset + i) * 2);
+    }
+    written = file.write(chunk, sizeof(chunk)) == sizeof(chunk);
+  }
+  file.close();
+  if (!written || !LittleFS.rename("/photo.tmp", "/photo.bin")) {
+    LittleFS.remove("/photo.tmp");
+    server.send(507, "text/plain; charset=utf-8", "照片保存失败，原照片保持不变");
+    return;
+  }
+  for (size_t i = 0; i < photo::kBytes; ++i) {
+    photoBitmap[i] = photo::decodeByte(hex.c_str() + i * 2);
+  }
+  hasPhoto = true;
+  photoDirty = true;
+  server.send(200, "text/plain; charset=utf-8", "已保存，屏幕正在刷新");
 }
 
 void handleSave() {
@@ -338,6 +367,8 @@ void startWebServer() {
   dnsServer.stop();
   WiFi.softAPdisconnect(true);
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/photo", HTTP_GET, handleGetPhoto);
+  server.on("/photo", HTTP_POST, handlePhoto);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/quota", HTTP_POST, handleQuota);
   server.on("/resetwifi", HTTP_POST, handleResetWifi);
@@ -493,7 +524,7 @@ void startSetupPortal(const String& reason) {
   }
   setupServer.begin();
 
-  ui.drawSetupScreen(apSsid, apPassword, "192.168.4.1", reason);
+  if (!hasPhoto) ui.drawSetupScreen(apSsid, apPassword, "192.168.4.1", reason);
   Serial.printf("Setup AP: %s / http://192.168.4.1\n", apSsid.c_str());
   Serial.printf("Setup reason: %s\n", reason.c_str());
 }
@@ -546,6 +577,7 @@ UiData makeUiData(const struct tm& t) {
 }
 
 void drawFullScreen(const struct tm& t) {
+  return;  // Album mode never repaints the calendar over a photo.
   ui.drawMainUI(makeUiData(t));
   lastMinute = t.tm_min;
   lastDay = t.tm_mday;
@@ -555,6 +587,7 @@ void drawFullScreen(const struct tm& t) {
 }
 
 void drawTimePartial(const struct tm& t) {
+  return;  // Static album has no minute refresh.
   if (!mainScreenVisible) {
     return;
   }
@@ -637,6 +670,7 @@ bool syncNtp() {
 }
 
 void drawConnectingScreen() {
+  if (hasPhoto) return;
   mainScreenVisible = false;
   display.setFullWindow();
   display.firstPage();
@@ -649,25 +683,15 @@ void drawConnectingScreen() {
 }
 
 void drawNoTimeScreen(bool wifiConnected) {
-  mainScreenVisible = false;
+  if (hasPhoto) return;
   display.setFullWindow();
   display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
-    drawCentered(display, "No time yet", 130, &FreeSansBold24pt7b);
-    drawCentered(display,
-                 wifiConnected ? "NTP sync failed - retrying"
-                               : "Wi-Fi offline - retrying",
-                 190, &FreeSans9pt7b);
-    drawCentered(display,
-                 wifiConnected ? "Check router / NTP" : "Check Wi-Fi / router",
-                 225, &FreeSans9pt7b);
-    if (wifiConnected) {
-      char ipbuf[40];
-      snprintf(ipbuf, sizeof(ipbuf), "Web UI: %s",
-               WiFi.localIP().toString().c_str());
-      drawCentered(display, ipbuf, 260, &FreeSans9pt7b);
-    }
+    drawCentered(display, "Photo Album", 100, &FreeSansBold24pt7b);
+    drawCentered(display, "Open the web page to add a photo", 160, &FreeSans9pt7b);
+    const String address = "http://" + WiFi.localIP().toString();
+    drawCentered(display, address.c_str(), 200, &FreeSans9pt7b);
   } while (display.nextPage());
 }
 
@@ -696,6 +720,8 @@ void setup() {
   pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
   ui.begin();
 
+  loadPhoto();
+  if (hasPhoto) drawPhoto();
   loadTodos();
   loadQuota();
   loadWifiCredentials();
@@ -713,7 +739,7 @@ void setup() {
   }
 
   startWebServer();
-  syncNtp();
+  drawNoTimeScreen(true);
 
   struct tm t;
   if (getLocalTime(&t, 0)) {
@@ -743,6 +769,8 @@ void loop() {
     server.handleClient();
   }
 
+  if (photoDirty) drawPhoto();
+
   const uint32_t now = millis();
   static uint32_t wifiDownSince = 0;
 
@@ -771,7 +799,7 @@ void loop() {
         lastWifiConnected = true;
         wifiDownSince = 0;
         startWebServer();
-        syncNtp();
+        drawNoTimeScreen(true);
         struct tm t;
         if (getLocalTime(&t, 0)) {
           drawFullScreen(t);
@@ -783,46 +811,6 @@ void loop() {
   }
   wifiDownSince = 0;
 
-  // Wi-Fi is up but NTP has not synced yet: retry periodically.
-  if (!ntpSynced) {
-    if (now - lastNtpRetryMs >= NTP_RETRY_MS) {
-      lastNtpRetryMs = now;
-      if (syncNtp()) {
-        struct tm t;
-        if (getLocalTime(&t, 0)) {
-          drawFullScreen(t);
-        }
-      }
-    }
-  }
-
-  struct tm t;
-  if (!getLocalTime(&t, 0)) {
-    delay(200);
-    return;
-  }
-
-  if (todosDirty) {
-    todosDirty = false;
-    drawFullScreen(t);
-  } else if (quotaDirty && mainScreenVisible) {
-    quotaDirty = false;
-    ui.drawAIUsageCardPartial(makeUiData(t));
-  } else if (t.tm_mday != lastDay ||
-             now - lastFullRefreshMs >= FULL_REFRESH_MS) {
-    drawFullScreen(t);
-  } else if (t.tm_min != lastMinute) {
-    drawTimePartial(t);
-  }
-
-  static uint32_t lastReport = 0;
-  if (now - lastReport >= 30000) {
-    lastReport = now;
-    Serial.printf("[%lu s] %04d-%02d-%02d %02d:%02d Wi-Fi=%d NTP=%d\n",
-                  static_cast<unsigned long>(now / 1000), t.tm_year + 1900,
-                  t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min,
-                  WiFi.status() == WL_CONNECTED ? 1 : 0, ntpSynced ? 1 : 0);
-  }
-
-  delay(200);
+  // Album contents only refresh after an explicit photo upload.
+  delay(10);
 }
